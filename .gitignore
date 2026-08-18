@@ -1,0 +1,6 @@
+data/
+datasets/
+.env
+node_modules/
+__pycache__/
+.venv/
