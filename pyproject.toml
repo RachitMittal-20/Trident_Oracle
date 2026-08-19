@@ -6,7 +6,12 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "pydantic>=2.9",
+    "psycopg[binary]>=3.2",
+    "core",
 ]
+
+[tool.uv.sources]
+core = { workspace = true }
 
 [dependency-groups]
 dev = [

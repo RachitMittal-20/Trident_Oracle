@@ -177,4 +177,5 @@ installed version's docs before writing animation code — do not write v3 synta
 
 <!-- Update this line after each phase so a fresh session has context. -->
 
-Phase: 0 — not started
+Phase: 0 (Foundation) — complete. Monorepo scaffold, DB schema + RLS migrations,
+packages/core domain models, and seed data are done. Phase 1 (Extraction) starts next.
