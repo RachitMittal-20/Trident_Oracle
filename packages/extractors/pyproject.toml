@@ -10,6 +10,9 @@ dependencies = [
     "pillow>=10.4",
     "python-dateutil>=2.9",
     "structlog>=24.4",
+    "pytesseract>=0.3.13",
+    "opencv-python-headless>=4.10",
+    "numpy>=1.26",
 ]
 
 [tool.uv.sources]

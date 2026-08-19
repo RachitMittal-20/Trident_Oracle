@@ -38,8 +38,12 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+# python_version tracks the actual interpreter uv resolves into .venv (3.13,
+# even though requires-python floor is 3.11), not a target for our own syntax --
+# some third-party stubs (numpy) use PEP 695 syntax that only parses under
+# python_version >= 3.12, regardless of what our own code uses.
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.13"
 strict = false
 ignore_missing_imports = true
 explicit_package_bases = true
@@ -53,3 +57,8 @@ strict = true
 [tool.pytest.ini_options]
 testpaths = ["apps", "packages"]
 addopts = "--import-mode=importlib"
+# Lets test modules import sibling test-helper modules directly (e.g.
+# extractors' tests/synth.py, shared by multiple test files) without needing
+# an __init__.py, which would reintroduce the module-name collisions
+# --import-mode=importlib was chosen to avoid in the first place.
+pythonpath = ["packages/extractors/tests"]
