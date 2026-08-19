@@ -53,6 +53,12 @@ This is a solo 45-day internship project. It must be complete and demoable, not 
 | Queue | Postgres `FOR UPDATE SKIP LOCKED` — **no Redis, no Celery** |
 | Tests | pytest (Python), Vitest (TS) |
 
+**Gemini model note:** `gemini-2.5-flash` returned a 404 for new API keys as of the day-one
+sanity check (Aug 2026) — it's no longer available to new users. `gemini-3.6-flash` is confirmed
+working (exact-match extraction test against a synthetic invoice with known values). `GeminiExtractor`
+reads the model name from `GEMINI_MODEL`, defaulting to `gemini-3.6-flash`, specifically so the
+next free-tier model rotation is a config change, not a code change.
+
 ---
 
 ## Layout

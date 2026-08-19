@@ -29,6 +29,7 @@ from collections.abc import Sequence
 from dataclasses import astuple
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import Literal
 
 import psycopg
 from core.models import (
@@ -182,6 +183,7 @@ def build_purchase_orders(
         total = subtotal + tax
 
         has_receipt = i < N_RECEIPTED
+        status: Literal["open", "partially_received", "closed", "cancelled"]
         if not has_receipt:
             status = "open"
         elif i < 5 or (5 <= i < 15):
@@ -245,7 +247,7 @@ def build_goods_receipts(
 
         for idx, pol in enumerate(po_lines):
             qty_received = pol.qty_ordered
-            condition: str = "good"
+            condition: Literal["good", "damaged", "partial"] = "good"
 
             if idx == 0 and scenario == "short":
                 shortfall = min(Decimal("2"), pol.qty_ordered - Decimal("1"))

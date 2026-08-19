@@ -18,6 +18,7 @@ dev = [
     "ruff>=0.7",
     "mypy>=1.13",
     "pytest>=8.3",
+    "types-python-dateutil>=2.9",
 ]
 
 [tool.uv.workspace]
@@ -42,6 +43,7 @@ python_version = "3.11"
 strict = false
 ignore_missing_imports = true
 explicit_package_bases = true
+mypy_path = "apps/api:apps/worker:packages/core:packages/extractors:packages/notifiers:packages/evals"
 exclude = "tests/"
 
 [[tool.mypy.overrides]]

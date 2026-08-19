@@ -1,0 +1,62 @@
+{
+  "header": {
+    "invoice_number": "INV-2026-00417",
+    "invoice_date": "2026-08-12",
+    "due_date": "2026-09-11",
+    "vendor_name": "Acme Supply Co.",
+    "currency": "USD",
+    "subtotal": "$421.00",
+    "tax": "$29.47",
+    "total": "$450.47"
+  },
+  "line_items": [
+    {
+      "description": "Steel bracket, 4in, zinc-plated",
+      "qty": "40",
+      "unit_price": "$3.25",
+      "line_total": "$130.00"
+    },
+    {
+      "description": "Hydraulic hose, 10ft",
+      "qty": "12",
+      "unit_price": "$18.75",
+      "line_total": "$225.00"
+    },
+    {
+      "description": "Rubber gasket, 6in flange",
+      "qty": "60",
+      "unit_price": "$1.10",
+      "line_total": "$66.00"
+    }
+  ],
+  "confidence": {
+    "header.invoice_number": 0.99,
+    "header.invoice_date": 0.99,
+    "header.due_date": 0.97,
+    "header.vendor_name": 0.98,
+    "header.currency": 0.99,
+    "header.subtotal": 0.99,
+    "header.tax": 0.99,
+    "header.total": 0.99,
+    "lines[0].description": 0.97,
+    "lines[0].qty": 0.99,
+    "lines[0].unit_price": 0.99,
+    "lines[0].line_total": 0.99,
+    "lines[1].description": 0.96,
+    "lines[1].qty": 0.99,
+    "lines[1].unit_price": 0.99,
+    "lines[1].line_total": 0.99,
+    "lines[2].description": 0.95,
+    "lines[2].qty": 0.98,
+    "lines[2].unit_price": 0.99,
+    "lines[2].line_total": 0.99
+  },
+  "bbox": {
+    "header.total": { "page": 1, "x": 0.62, "y": 0.71, "w": 0.18, "h": 0.03 },
+    "lines[0].qty": { "page": 1, "x": 0.10, "y": 0.42, "w": 0.05, "h": 0.02 }
+  },
+  "backend": "mock",
+  "model_version": "fixture-v1",
+  "latency_ms": 5,
+  "estimated_tokens": 0
+}

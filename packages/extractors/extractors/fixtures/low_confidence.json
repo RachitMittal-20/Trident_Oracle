@@ -1,0 +1,39 @@
+{
+  "header": {
+    "invoice_number": "INV-2026-00418",
+    "invoice_date": "08/13/2026",
+    "due_date": null,
+    "vendor_name": "Northwind Traders LLC",
+    "currency": "USD",
+    "subtotal": "1,050.00",
+    "tax": "73.50",
+    "total": "1,123.50"
+  },
+  "line_items": [
+    {
+      "description": "Ctrl cable 5m",
+      "qty": "20",
+      "unit_price": "52.50",
+      "line_total": "1,050.00"
+    }
+  ],
+  "confidence": {
+    "header.invoice_number": 0.61,
+    "header.invoice_date": 0.55,
+    "header.due_date": 0.0,
+    "header.vendor_name": 0.72,
+    "header.currency": 0.7,
+    "header.subtotal": 0.58,
+    "header.tax": 0.58,
+    "header.total": 0.6,
+    "lines[0].description": 0.5,
+    "lines[0].qty": 0.65,
+    "lines[0].unit_price": 0.6,
+    "lines[0].line_total": 0.58
+  },
+  "bbox": {},
+  "backend": "mock",
+  "model_version": "fixture-v1",
+  "latency_ms": 7,
+  "estimated_tokens": 0
+}
