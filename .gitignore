@@ -1,6 +1,9 @@
+.env
+__pycache__/
+node_modules/
+.next/
+.venv/
+*.pyc
 data/
 datasets/
-.env
-node_modules/
-__pycache__/
-.venv/
+.DS_Store

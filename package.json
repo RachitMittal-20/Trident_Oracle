@@ -1,0 +1,11 @@
+{
+  "name": "trident-oracle",
+  "private": true,
+  "packageManager": "pnpm@11.22.0",
+  "scripts": {
+    "dev:web": "pnpm --filter web dev",
+    "lint": "pnpm --filter web lint",
+    "format": "pnpm --filter web format",
+    "test": "pnpm --filter web test"
+  }
+}
