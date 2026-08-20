@@ -1965,11 +1965,13 @@ version = "0.1.0"
 source = { editable = "apps/worker" }
 dependencies = [
     { name = "core" },
+    { name = "psycopg", extra = ["binary"] },
     { name = "structlog" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "core", editable = "packages/core" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "structlog", specifier = ">=24.4" },
 ]

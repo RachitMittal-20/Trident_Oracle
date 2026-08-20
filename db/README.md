@@ -14,7 +14,11 @@ Never edit a committed migration; add a new numbered file instead.
 0007_approvals.sql    approval_requests
 0008_audit.sql        audit_log + append-only trigger
 0009_evals.sql        eval_runs, eval_results
-0010_rls.sql          RLS policies on every tenant-scoped table
+0010_rls.sql          RLS policies on tables with a direct tenant_id column
+0011_rls_child_tables.sql  tenant_id + RLS on the remaining child tables
+0012_queue_claimer_role.sql  queue_claimer role (see "Security model" below)
+0013_app_role.sql     app_role (see "Security model" below)
+0014_tenants_self_read.sql  tenants RLS + read-only self-scoped app_role grant
 ```
 
 ## Applying against Supabase
@@ -72,8 +76,9 @@ dropdb trident_scratch
 ## Setting `app.tenant_id`
 
 RLS policies (0010, 0011) key off `current_setting('app.tenant_id', true)::uuid`. Both
-the API (per-request) and the worker (per-job) must call, on the same connection
-that runs the subsequent query:
+the API (per-request) and the worker's *handler* connection (per-job, as `app_role` —
+see "Security model" below) must call, on the same connection that runs the
+subsequent query:
 
 ```sql
 select set_config('app.tenant_id', '<tenant-uuid>', false);
@@ -85,6 +90,75 @@ default — confirmed by testing against a non-superuser role locally. Note that
 Postgres superusers (and the Supabase `postgres` role) bypass RLS entirely
 regardless of policies or `FORCE ROW LEVEL SECURITY`, so always test tenant
 isolation as a restricted role, not as the admin connection.
+
+Never set `app.tenant_id` on a `queue_claimer` connection — that role has no
+tenant-scoped policies applied to it in the first place (see below), so doing
+so would be misleading rather than protective.
+
+## Security model
+
+Two Postgres roles, two jobs:
+
+**`app_role`** (0013_app_role.sql) is the ordinary, fully RLS-restricted
+connection. The API uses it per-request; the worker uses it per-job for
+everything a job *handler* does once claimed, with `app.tenant_id` set to
+that job's own tenant before the handler runs. It has `NOSUPERUSER
+NOBYPASSRLS` explicitly and `SELECT`/`INSERT`/`UPDATE` grants on every
+tenant-scoped table (every table with a `tenant_isolation` policy from 0010
+and 0011) — but grants alone don't isolate anything here, since app_role
+doesn't bypass RLS. Every tenant-scoped table's `tenant_isolation` policy
+applies in full on this role — this is the connection where "RLS is the
+authorization boundary" (CLAUDE.md principle 6) is actually being enforced.
+
+**`tenants` is a deliberate exception to the 0013 grant list** — 0014
+(`tenants_self_read`) closes it separately, because `tenants` needed a
+different *policy shape*, not just a different table. Every other RLS'd
+table has its own `tenant_id` column, compared against
+`current_setting('app.tenant_id', true)` — a row belongs to a tenant. A row
+in `tenants` *is* a tenant; there's no `tenant_id` column to compare, so the
+policy compares the table's own `id` instead: a session may read the one
+row whose `id` matches its current `app.tenant_id`, and no other. Same
+default-deny shape as everywhere else (unset `app.tenant_id` → `NULL` →
+denied). `app_role`'s grant on `tenants` is `SELECT` only — no `INSERT`,
+`UPDATE`, or `DELETE` — because provisioning a tenant (creating, renaming,
+deleting one) is an administrative operation done out of band, not
+something application code does on a tenant's own behalf. In practice this
+means a tenant can read its own registry row (name, slug, created_at) — e.g.
+to display it in the UI — and nothing about any other tenant, and can't
+write to it at all.
+
+**`queue_claimer`** (0012_queue_claimer_role.sql) exists for exactly one
+problem: `claim_next()`'s query (`apps/worker/worker/db.py`) has no `tenant_id`
+filter by design — it claims the globally-next queued job across every tenant,
+ordered by `created_at`. That's fundamentally incompatible with `jobs`' RLS
+policy, which only ever shows the rows for one tenant at a time. `queue_claimer`
+has `BYPASSRLS` plus table grants scoped to exactly `jobs` and `dead_letters` —
+`SELECT`/`INSERT`/`UPDATE` on `jobs`, `SELECT`/`INSERT` on `dead_letters`, and an
+explicit `REVOKE ALL ... FROM queue_claimer` on every other table first. `apps/
+worker/worker/db.py`'s `JobQueue` (`enqueue`/`claim_next`/`complete`/`fail`/
+`reap_stale_locks`) always connects as this role; nothing else does.
+
+Why this doesn't weaken "RLS is the authorization boundary": `queue_claimer`
+bypassing RLS can't leak tenant business data, because it has no grant on any
+table that holds tenant business data — `invoices`, `purchase_orders`, and
+everything else remain completely unreachable to it regardless of RLS. RLS
+stays the enforced boundary on every table where a boundary is actually needed;
+`queue_claimer`'s reach is bounded by grants instead, on two tables that hold
+queue plumbing, not tenant data.
+
+Why `BYPASSRLS` rather than a permissive `USING (true)` policy for this role:
+RLS policies are additive per command type, so a "see everything" policy would
+mean writing and maintaining three near-duplicate policies (`SELECT`, `INSERT`,
+`UPDATE`) that sit alongside `tenant_isolation` and must be kept in sync if that
+policy's shape ever changes. A role-level `BYPASSRLS` is the standard Postgres
+idiom for "this role is infrastructure, not a tenant" — one flag, visible
+directly in `\du`, rather than logic spread across policy definitions.
+
+Both roles' passwords/credentials are provisioned outside migrations, like
+every other secret — see `.env.example`'s `QUEUE_CLAIMER_DATABASE_URL` and
+`DATABASE_URL`. Applying `db/migrations/` alone, in order, against a fresh
+Postgres instance is enough to reproduce the entire RLS story — both roles,
+every grant, every policy — without any manual `CREATE ROLE` step.
 
 ## Known scope limits
 

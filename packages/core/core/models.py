@@ -80,6 +80,13 @@ class JobStatus(StrEnum):
     DEAD = "dead"
 
 
+class JobType(StrEnum):
+    EXTRACT = "extract"
+    MATCH = "match"
+    NOTIFY = "notify"
+    POST = "post"
+
+
 # --- Tenancy -----------------------------------------------------------------
 
 
