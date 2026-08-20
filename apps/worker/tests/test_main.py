@@ -104,7 +104,7 @@ def test_run_one_job_sets_tenant_before_running_handler() -> None:
     conn = _FakeConnection()
     registry = HandlerRegistry()
     seen_tenant: list[str] = []
-    registry.register(JobType.EXTRACT, lambda c, j: seen_tenant.append(str(j.tenant_id)))
+    registry.register(JobType.EXTRACT, lambda c, q, j: seen_tenant.append(str(j.tenant_id)))
 
     run_one_job(queue, conn, registry, "worker-1")  # type: ignore[arg-type]
 
@@ -119,7 +119,7 @@ def test_run_one_job_completes_on_handler_success() -> None:
     queue = _FakeQueue(job)
     conn = _FakeConnection()
     registry = HandlerRegistry()
-    registry.register(JobType.EXTRACT, lambda c, j: None)
+    registry.register(JobType.EXTRACT, lambda c, q, j: None)
 
     claimed = run_one_job(queue, conn, registry, "worker-1")  # type: ignore[arg-type]
 
@@ -134,7 +134,7 @@ def test_run_one_job_fails_job_when_handler_raises() -> None:
     conn = _FakeConnection()
     registry = HandlerRegistry()
 
-    def handler(c: psycopg.Connection, j: Job) -> None:
+    def handler(c: psycopg.Connection, q: object, j: Job) -> None:
         raise ValueError("handler exploded")
 
     registry.register(JobType.EXTRACT, handler)

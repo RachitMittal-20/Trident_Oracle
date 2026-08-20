@@ -19,6 +19,11 @@ Never edit a committed migration; add a new numbered file instead.
 0012_queue_claimer_role.sql  queue_claimer role (see "Security model" below)
 0013_app_role.sql     app_role (see "Security model" below)
 0014_tenants_self_read.sql  tenants RLS + read-only self-scoped app_role grant
+0015_invoices_nullable_pre_extraction.sql  invoice_number/date/subtotal/tax/total
+                       become nullable -- unknown at RECEIVED, before extraction runs
+0016_invoices_allow_mock_backend.sql  extraction_backend CHECK also allows 'mock'
+                       (MockExtractor's real, named backend value -- see
+                       packages/extractors/factory.py)
 ```
 
 ## Applying against Supabase

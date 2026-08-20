@@ -215,20 +215,24 @@ class GoodsReceiptLine:
 
 @dataclass(frozen=True, slots=True)
 class Invoice:
+    """invoice_number/invoice_date/subtotal/tax/total are None at RECEIVED --
+    they don't exist yet until extraction reads them off the document. Every
+    other field is required from the moment the row is created at upload."""
+
     id: uuid.UUID
     tenant_id: uuid.UUID
-    invoice_number: str
-    invoice_date: date
     currency: str
-    subtotal: Decimal
-    tax: Decimal
-    total: Decimal
     source_channel: Literal["upload", "email", "webhook"]
     source_file_path: str
     content_hash: str
     status: InvoiceStatus
     created_at: datetime
     updated_at: datetime
+    invoice_number: str | None = None
+    invoice_date: date | None = None
+    subtotal: Decimal | None = None
+    tax: Decimal | None = None
+    total: Decimal | None = None
     vendor_id: uuid.UUID | None = None
     po_id: uuid.UUID | None = None
     due_date: date | None = None
@@ -236,16 +240,23 @@ class Invoice:
     overall_confidence: Decimal | None = None
 
     def __post_init__(self) -> None:
-        _check(bool(self.invoice_number.strip()), "Invoice.invoice_number must not be blank")
+        if self.invoice_number is not None:
+            _check(bool(self.invoice_number.strip()), "Invoice.invoice_number must not be blank")
         _check(len(self.currency) == 3, "Invoice.currency must be a 3-letter code")
         _check(
             len(self.content_hash) == 64,
             "Invoice.content_hash must be a 64-character SHA-256 hex digest",
         )
-        _check(self.subtotal >= 0, "Invoice.subtotal must not be negative")
-        _check(self.tax >= 0, "Invoice.tax must not be negative")
-        _check(self.total >= 0, "Invoice.total must not be negative")
-        _check(self.subtotal + self.tax == self.total, "Invoice.subtotal + tax must equal total")
+        if self.subtotal is not None:
+            _check(self.subtotal >= 0, "Invoice.subtotal must not be negative")
+        if self.tax is not None:
+            _check(self.tax >= 0, "Invoice.tax must not be negative")
+        if self.total is not None:
+            _check(self.total >= 0, "Invoice.total must not be negative")
+        if self.subtotal is not None and self.tax is not None and self.total is not None:
+            _check(
+                self.subtotal + self.tax == self.total, "Invoice.subtotal + tax must equal total"
+            )
         if self.overall_confidence is not None:
             _check(
                 Decimal("0") <= self.overall_confidence <= Decimal("1"),

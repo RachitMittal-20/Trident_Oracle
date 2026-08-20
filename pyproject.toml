@@ -29,6 +29,7 @@ members = [
     "packages/extractors",
     "packages/notifiers",
     "packages/evals",
+    "packages/storage",
 ]
 
 [tool.ruff]
@@ -47,7 +48,7 @@ python_version = "3.13"
 strict = false
 ignore_missing_imports = true
 explicit_package_bases = true
-mypy_path = "apps/api:apps/worker:packages/core:packages/extractors:packages/notifiers:packages/evals"
+mypy_path = "apps/api:apps/worker:packages/core:packages/extractors:packages/notifiers:packages/evals:packages/storage"
 exclude = "tests/"
 
 [[tool.mypy.overrides]]

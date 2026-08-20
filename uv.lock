@@ -15,6 +15,7 @@ members = [
     "evals",
     "extractors",
     "notifiers",
+    "storage",
     "trident-oracle",
     "worker",
 ]
@@ -58,6 +59,9 @@ dependencies = [
     { name = "core" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "python-multipart" },
+    { name = "storage" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -66,6 +70,9 @@ requires-dist = [
     { name = "core", editable = "packages/core" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
+    { name = "python-multipart", specifier = ">=0.0.12" },
+    { name = "storage", editable = "packages/storage" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
 ]
 
@@ -1467,6 +1474,15 @@ wheels = [
 ]
 
 [[package]]
+name = "python-multipart"
+version = "0.0.32"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5b/42/55c32bb9b12693c092ad250a0e82edb5b31ddeda6eb772de5f308b3804ad/python_multipart-0.0.32.tar.gz", hash = "sha256:be54b7f3fa167bb83e4fcd936b887b708f4e57fe75911c02aebf53efaf8d938e", size = 46881, upload-time = "2026-06-04T16:18:58.647Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e1/04/e8135ebd1ad02c56ec633277529b2602ff99ff634be76cdba5744cf554fd/python_multipart-0.0.32-py3-none-any.whl", hash = "sha256:ff6d3f776f16878c894e52e107296ffc890e913c611b1a4ec6c44e2821fe2e23", size = 30042, upload-time = "2026-06-04T16:18:57.319Z" },
+]
+
+[[package]]
 name = "pyyaml"
 version = "6.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1590,6 +1606,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b5/b4/205b0d5241d934e8add0c38aa924c4f9fb7330834ff11e5444db964ec3f9/starlette-1.6.0.tar.gz", hash = "sha256:d4e3ac5e546444960c710297a3c9fc3f7ebae1b7e963f3d36173b49da535be9b", size = 2716969, upload-time = "2026-08-08T18:27:57.512Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c8/cb/6a6a47d5b464bd08695d254f3da6e7986cc70c9fa5d778eda57538edfe56/starlette-1.6.0-py3-none-any.whl", hash = "sha256:a86dd39d14bb45f85a3d18525215a9ef0cfd1f192ac793220e72598c90335f0c", size = 75969, upload-time = "2026-08-08T18:27:56.196Z" },
+]
+
+[[package]]
+name = "storage"
+version = "0.1.0"
+source = { editable = "packages/storage" }
+dependencies = [
+    { name = "core" },
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "core", editable = "packages/core" },
+    { name = "httpx", specifier = ">=0.27" },
 ]
 
 [[package]]
@@ -1965,13 +1996,17 @@ version = "0.1.0"
 source = { editable = "apps/worker" }
 dependencies = [
     { name = "core" },
+    { name = "extractors" },
     { name = "psycopg", extra = ["binary"] },
+    { name = "storage" },
     { name = "structlog" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "core", editable = "packages/core" },
+    { name = "extractors", editable = "packages/extractors" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
+    { name = "storage", editable = "packages/storage" },
     { name = "structlog", specifier = ">=24.4" },
 ]

@@ -27,3 +27,8 @@ class PolicyViolation(TridentOracleError):
 
 class TokenError(TridentOracleError):
     """An approval token is invalid, expired, or already consumed."""
+
+
+class StorageError(TridentOracleError):
+    """A file storage backend (Supabase Storage) failed to upload, download,
+    or sign a URL for an object."""

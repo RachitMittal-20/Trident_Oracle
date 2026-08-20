@@ -40,9 +40,13 @@ from types import FrameType
 
 import psycopg
 import structlog
+from core.models import JobType
 from core.queue.models import Job
+from storage.base import Storage
+from storage.supabase_storage import SupabaseStorage
 
 from worker.db import DEFAULT_BASE_DELAY, JobQueue
+from worker.extract_handler import make_extract_handler
 from worker.registry import HandlerRegistry
 
 structlog.configure(
@@ -119,7 +123,7 @@ def run_one_job(
     try:
         if handler is None:
             raise ValueError(f"no handler registered for job_type {job.job_type!r}")
-        handler(handler_conn, job)
+        handler(handler_conn, queue, job)
     except Exception as exc:
         # Deliberately broad: a handler's own exception must feed the
         # retry/dead-letter system, not crash the worker process or vanish
@@ -160,11 +164,21 @@ def poll_loop(
         log.info("worker_thread_stopped", worker_id=worker_id)
 
 
-def build_default_registry() -> HandlerRegistry:
-    """No real job handlers exist yet -- extract/match/notify/post are later
-    phases. This gives main() something concrete to run; real handlers
-    register themselves here as those phases land."""
-    return HandlerRegistry()
+def build_default_registry(storage: Storage) -> HandlerRegistry:
+    """extract is the only handler wired up so far -- match/notify/post are
+    later phases. Real handlers register themselves here as those land."""
+    registry = HandlerRegistry()
+    registry.register(JobType.EXTRACT, make_extract_handler(storage))
+    return registry
+
+
+def _build_storage_from_env() -> Storage:
+    base_url = os.environ.get("SUPABASE_URL")
+    service_key = os.environ.get("SUPABASE_SERVICE_KEY")
+    if not base_url or not service_key:
+        raise SystemExit("SUPABASE_URL and SUPABASE_SERVICE_KEY must both be set")
+    bucket = os.environ.get("SUPABASE_STORAGE_BUCKET", "invoices")
+    return SupabaseStorage(base_url, service_key, bucket)
 
 
 def main() -> None:
@@ -183,7 +197,7 @@ def main() -> None:
     stale_after = timedelta(minutes=float(os.environ.get("WORKER_STALE_LOCK_MINUTES", "10")))
     base_delay = timedelta(seconds=float(os.environ.get("WORKER_BASE_DELAY_SECONDS", "60")))
 
-    registry = build_default_registry()
+    registry = build_default_registry(_build_storage_from_env())
     shutdown = GracefulShutdown()
     shutdown.install_signal_handlers()
 
