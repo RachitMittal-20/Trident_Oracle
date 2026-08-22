@@ -216,8 +216,8 @@ def test_reject_happy_path_transitions_invoice_and_dismisses_exception_no_post_j
         cur.execute("SELECT status FROM match_exceptions WHERE id = %s", (exception_id,))
         assert cur.fetchone()["status"] == "dismissed"
 
-        cur.execute("SELECT count(*) FROM jobs WHERE tenant_id = %s", (tenant_id,))
-        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT count(*) AS n FROM jobs WHERE tenant_id = %s", (tenant_id,))
+        assert cur.fetchone()["n"] == 0
 
 
 def test_issued_token_persists_only_the_hash(
@@ -336,8 +336,8 @@ def test_concurrent_redemption_of_the_same_token_succeeds_exactly_once(
     with admin_conn.cursor(row_factory=dict_row) as cur:
         cur.execute("SELECT status FROM invoices WHERE id = %s", (invoice_id,))
         assert cur.fetchone()["status"] == "APPROVED"
-        cur.execute("SELECT count(*) FROM jobs WHERE tenant_id = %s", (tenant_id,))
-        assert cur.fetchone()[0] == 1  # not enqueued more than once
+        cur.execute("SELECT count(*) AS n FROM jobs WHERE tenant_id = %s", (tenant_id,))
+        assert cur.fetchone()["n"] == 1  # not enqueued more than once
 
 
 # --- raw token never appears in logs or API responses -----------------------
