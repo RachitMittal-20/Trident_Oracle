@@ -28,6 +28,8 @@ Never edit a committed migration; add a new numbered file instead.
                        reasoning from core.matching's MatchFinding/DuplicateFinding
 0018_approval_requests_token_hash_unique.sql  UNIQUE(token_hash)
 0019_approval_redeemer_role.sql  approval_redeemer role (see "Security model" below)
+0020_notification_deliveries_invoice_context.sql  invoice_id/exception_id on
+                       notification_deliveries, for GET /v1/deliveries
 ```
 
 ## Applying against Supabase

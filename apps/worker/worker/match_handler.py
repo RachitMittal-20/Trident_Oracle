@@ -321,6 +321,11 @@ def _apply_decision(
     notify_idempotency_key = hashlib.sha256(
         f"{tenant_id}:{invoice_id}:notify:pending_approval".encode()
     ).hexdigest()
+    # max_attempts=5, not the jobs table's default of 3 -- worker.notify_handler
+    # retries a RetryableNotificationError up to 5 times. This payload does
+    # NOT yet satisfy notify_handler's full contract (recipient/channel/
+    # title/body) -- see that module's docstring for why that gap is
+    # deliberately left open rather than improvised here.
     queue.enqueue(
         JobType.NOTIFY,
         {
@@ -330,6 +335,7 @@ def _apply_decision(
         },
         tenant_id,
         notify_idempotency_key,
+        max_attempts=5,
     )
 
 
@@ -385,9 +391,7 @@ def handle_match(conn: psycopg.Connection[Any], queue: JobQueue, job: Job) -> No
             if grn_rows:
                 grn_row = grn_rows[0]
                 grn_ids = [row["id"] for row in grn_rows]
-                cur.execute(
-                    "SELECT * FROM goods_receipt_lines WHERE grn_id = ANY(%s)", (grn_ids,)
-                )
+                cur.execute("SELECT * FROM goods_receipt_lines WHERE grn_id = ANY(%s)", (grn_ids,))
                 grn_line_rows = cur.fetchall()
 
         cur.execute(

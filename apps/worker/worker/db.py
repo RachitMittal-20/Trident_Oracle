@@ -72,6 +72,7 @@ class JobQueue:
         tenant_id: uuid.UUID,
         idempotency_key: str,
         run_after: datetime | None = None,
+        max_attempts: int | None = None,
     ) -> Job:
         """Insert a new job. On idempotency_key conflict, returns the
         existing row unchanged -- never raises, never duplicates.
@@ -80,13 +81,22 @@ class JobQueue:
         self-assignment, rather than DO NOTHING) avoids a second
         SELECT-on-conflict round trip and the race window that would open
         between it and the INSERT.
+
+        `max_attempts` defaults to the jobs table's own DEFAULT (3) when
+        omitted -- the `coalesce(..., 3)` below mirrors that column default
+        rather than replacing it, since supplying the column at all (even
+        as NULL) bypasses the table's DEFAULT clause. Notify jobs pass 5
+        explicitly (worker/match_handler.py) -- CLAUDE.md's notification
+        pipeline calls for up to 5 delivery attempts, more than the queue's
+        general-purpose default.
         """
         with self._conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
-                INSERT INTO jobs (tenant_id, job_type, payload, idempotency_key, run_after)
+                INSERT INTO jobs (tenant_id, job_type, payload, idempotency_key, run_after,
+                                   max_attempts)
                 VALUES (%(tenant_id)s, %(job_type)s, %(payload)s, %(idempotency_key)s,
-                        coalesce(%(run_after)s, now()))
+                        coalesce(%(run_after)s, now()), coalesce(%(max_attempts)s, 3))
                 ON CONFLICT (idempotency_key)
                     DO UPDATE SET idempotency_key = jobs.idempotency_key
                 RETURNING *
@@ -97,6 +107,7 @@ class JobQueue:
                     "payload": Jsonb(payload),
                     "idempotency_key": idempotency_key,
                     "run_after": run_after,
+                    "max_attempts": max_attempts,
                 },
             )
             row = cur.fetchone()

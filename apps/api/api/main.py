@@ -3,31 +3,28 @@ core, and serialize; the actual reads/writes live in api/db.py, not here --
 CLAUDE.md: "Do not put business logic in API route handlers."
 """
 
-import hashlib
 import hmac
 import os
 import uuid
-from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 import psycopg
 import structlog
 from core.errors import TokenError
-from core.magic_bytes import sniff_mime_type
-from core.models import Invoice, InvoiceStatus
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse
 from notifiers.telegram import TelegramNotifier
 from storage.base import Storage
 
-from api import __version__, approvals, db
+from api import __version__, approvals, db, webhooks
 from api.config import (
-    MAX_UPLOAD_BYTES,
     get_approval_redeemer_connection,
     get_connection,
     get_storage,
 )
+from api.ingest import DuplicateInvoice, FileTooLarge, UnsupportedFileType, ingest_invoice
 from api.schemas import (
+    DeliveryResponse,
     DuplicateInvoiceDetail,
     FieldConfidenceResponse,
     InvoiceLineResponse,
@@ -37,6 +34,7 @@ from api.schemas import (
 )
 
 app = FastAPI(title="Trident Oracle API")
+app.include_router(webhooks.router)
 log = structlog.get_logger()
 
 SIGNED_URL_EXPIRES_IN_SECONDS = 300
@@ -59,75 +57,35 @@ async def upload_invoice(
     # in this project. Whatever eventually determines the caller's tenant,
     # this is the point where it must be resolved before anything else runs.
     data = await file.read()
-    if len(data) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="file exceeds the 10 MB limit")
+    filename = file.filename or ""
 
-    mime_type = sniff_mime_type(data)
-    if mime_type is None:
+    try:
+        outcome = ingest_invoice(
+            conn,
+            storage,
+            tenant_id,
+            data,
+            filename,
+            source_channel="upload",
+            audit_action="invoice_uploaded",
+        )
+    except FileTooLarge as exc:
+        raise HTTPException(status_code=413, detail="file exceeds the 10 MB limit") from exc
+    except UnsupportedFileType as exc:
         raise HTTPException(
             status_code=415, detail="unsupported file type -- must be a PDF, PNG, or JPEG"
-        )
+        ) from exc
 
-    content_hash = hashlib.sha256(data).hexdigest()
-
-    db.set_tenant(conn, tenant_id)
-
-    existing_id = db.find_invoice_by_content_hash(conn, tenant_id, content_hash)
-    if existing_id is not None:
+    if isinstance(outcome, DuplicateInvoice):
         # A hard duplicate never reaches extraction -- reject before any
         # storage upload or job enqueue happens.
         raise HTTPException(
             status_code=409,
-            detail=DuplicateInvoiceDetail(invoice_id=existing_id).model_dump(mode="json"),
+            detail=DuplicateInvoiceDetail(invoice_id=outcome.invoice_id).model_dump(mode="json"),
         )
 
-    invoice_id = uuid.uuid4()
-    extension = mime_type.split("/")[-1]
-    filename = file.filename or f"upload.{extension}"
-    storage_path = f"{tenant_id}/{invoice_id}/{filename}"
-
-    storage.upload(storage_path, data, mime_type)
-
-    # Constructs the core Invoice dataclass -- even though only its
-    # RECEIVED-state subset of fields is known yet -- so its own validation
-    # (content_hash shape, currency shape) runs before anything is written.
-    now = datetime.now(UTC)
-    Invoice(
-        id=invoice_id,
-        tenant_id=tenant_id,
-        currency="USD",
-        source_channel="upload",
-        source_file_path=storage_path,
-        content_hash=content_hash,
-        status=InvoiceStatus.RECEIVED,
-        created_at=now,
-        updated_at=now,
-    )
-
-    db.insert_invoice(conn, invoice_id, tenant_id, storage_path, content_hash)
-
-    idempotency_key = hashlib.sha256(f"{tenant_id}{content_hash}".encode()).hexdigest()
-    job_id = db.enqueue_job(
-        conn,
-        tenant_id=tenant_id,
-        job_type="extract",
-        payload={"invoice_id": str(invoice_id)},
-        idempotency_key=idempotency_key,
-    )
-
-    db.insert_audit_log(
-        conn,
-        tenant_id=tenant_id,
-        actor_type="user",
-        action="invoice_uploaded",
-        entity_type="invoice",
-        entity_id=invoice_id,
-        after={"status": "RECEIVED", "content_hash": content_hash},
-    )
-
     conn.commit()
-
-    return UploadResponse(invoice_id=invoice_id, job_id=job_id)
+    return UploadResponse(invoice_id=outcome.invoice_id, job_id=outcome.job_id)
 
 
 @app.get("/v1/invoices/{invoice_id}", response_model=InvoiceResponse)
@@ -172,6 +130,27 @@ def get_invoice(
         created_at=invoice["created_at"],
         updated_at=invoice["updated_at"],
     )
+
+
+@app.get("/v1/deliveries", response_model=list[DeliveryResponse])
+def list_deliveries(
+    tenant_id: uuid.UUID,
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    status: Literal["pending", "sent", "failed", "dead"] | None = None,
+    channel: Literal["telegram", "email", "whatsapp"] | None = None,
+    invoice_id: uuid.UUID | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[DeliveryResponse]:
+    # tenant_id as a query param carries the same auth-placeholder caveat as
+    # every other endpoint here -- RLS (tenant_isolation on
+    # notification_deliveries) is what actually scopes the result, not this
+    # filter alone.
+    db.set_tenant(conn, tenant_id)
+    rows = db.list_notification_deliveries(
+        conn, status=status, channel=channel, invoice_id=invoice_id, limit=limit, offset=offset
+    )
+    return [DeliveryResponse(**row) for row in rows]
 
 
 # --- Approval endpoints -----------------------------------------------------

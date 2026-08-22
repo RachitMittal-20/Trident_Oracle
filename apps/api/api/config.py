@@ -7,8 +7,6 @@ import psycopg
 from storage.base import Storage
 from storage.supabase_storage import SupabaseStorage
 
-MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
-
 
 def get_database_url() -> str:
     url = os.environ.get("DATABASE_URL")

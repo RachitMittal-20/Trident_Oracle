@@ -43,6 +43,7 @@ def insert_invoice(
     source_file_path: str,
     content_hash: str,
     currency: str = "USD",
+    source_channel: str = "upload",
 ) -> None:
     # currency defaults to USD, a real (if provisional) value rather than a
     # null-like sentinel -- unlike invoice_number/date/amounts, which are
@@ -55,13 +56,14 @@ def insert_invoice(
             INSERT INTO invoices
                 (id, tenant_id, currency, source_channel, source_file_path,
                  content_hash, status)
-            VALUES (%(id)s, %(tenant_id)s, %(currency)s, 'upload', %(source_file_path)s,
+            VALUES (%(id)s, %(tenant_id)s, %(currency)s, %(source_channel)s, %(source_file_path)s,
                     %(content_hash)s, 'RECEIVED')
             """,
             {
                 "id": invoice_id,
                 "tenant_id": tenant_id,
                 "currency": currency,
+                "source_channel": source_channel,
                 "source_file_path": source_file_path,
                 "content_hash": content_hash,
             },
@@ -149,4 +151,44 @@ def get_invoice_lines(conn: psycopg.Connection[Any], invoice_id: uuid.UUID) -> l
 def get_field_confidences(conn: psycopg.Connection[Any], invoice_id: uuid.UUID) -> list[DictRow]:
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute("SELECT * FROM field_confidences WHERE invoice_id = %s", (invoice_id,))
+        return cur.fetchall()
+
+
+def list_notification_deliveries(
+    conn: psycopg.Connection[Any],
+    *,
+    status: str | None = None,
+    channel: str | None = None,
+    invoice_id: uuid.UUID | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[DictRow]:
+    """RLS (tenant_isolation on notification_deliveries) does the actual
+    tenant scoping here -- set_tenant() must already have been called on
+    `conn` by the caller, same as every other query in this module. Filters
+    are appended as plain AND clauses; each is parameterized, never
+    string-interpolated, regardless of how few are actually supplied.
+    """
+    clauses = ["true"]
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    if status is not None:
+        clauses.append("status = %(status)s")
+        params["status"] = status
+    if channel is not None:
+        clauses.append("channel = %(channel)s")
+        params["channel"] = channel
+    if invoice_id is not None:
+        clauses.append("invoice_id = %(invoice_id)s")
+        params["invoice_id"] = invoice_id
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"""
+            SELECT * FROM notification_deliveries
+            WHERE {" AND ".join(clauses)}
+            ORDER BY created_at DESC
+            LIMIT %(limit)s OFFSET %(offset)s
+            """,  # noqa: S608 -- clauses are fixed strings chosen from a closed set above, never user input
+            params,
+        )
         return cur.fetchall()

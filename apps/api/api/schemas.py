@@ -7,12 +7,45 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class UploadResponse(BaseModel):
     invoice_id: uuid.UUID
     job_id: uuid.UUID
+
+
+class WebhookInvoicePayload(BaseModel):
+    """POST /v1/webhooks/invoices' JSON body -- see docs/WEBHOOKS.md for the
+    full contract. Exactly one of file_base64/file_url must be present;
+    filename is optional either way (a fetched URL's path is used as a
+    fallback, a base64 payload with no filename gets a generic one)."""
+
+    tenant_id: uuid.UUID
+    filename: str | None = None
+    file_base64: str | None = None
+    file_url: str | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_file_source(self) -> "WebhookInvoicePayload":
+        if bool(self.file_base64) == bool(self.file_url):
+            raise ValueError("exactly one of file_base64 or file_url must be provided")
+        return self
+
+
+class DeliveryResponse(BaseModel):
+    id: uuid.UUID
+    invoice_id: uuid.UUID | None
+    exception_id: uuid.UUID | None
+    channel: str
+    recipient: str
+    status: str
+    attempts: int
+    next_retry_at: datetime | None
+    provider_message_id: str | None
+    error: str | None
+    sent_at: datetime | None
+    created_at: datetime
 
 
 class DuplicateInvoiceDetail(BaseModel):
