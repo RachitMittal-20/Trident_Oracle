@@ -27,6 +27,32 @@ def get_connection() -> Generator[psycopg.Connection, None, None]:
         conn.close()
 
 
+def get_approval_redeemer_database_url() -> str:
+    url = os.environ.get("APPROVAL_REDEEMER_DATABASE_URL")
+    if not url:
+        raise RuntimeError("APPROVAL_REDEEMER_DATABASE_URL is not set")
+    return url
+
+
+def get_approval_redeemer_connection() -> Generator[psycopg.Connection, None, None]:
+    """FastAPI dependency for the approval endpoints (api/main.py): one
+    connection per request, as approval_redeemer -- NOT a BYPASSRLS role,
+    same grants and tenant_isolation exposure as app_role on
+    approval_requests/invoices/match_exceptions/jobs/audit_log, plus one
+    narrow additional permissive SELECT policy on approval_requests alone
+    (see db/migrations/0019_approval_redeemer_role.sql and db/README.md's
+    "Security model" section) -- closed when the request finishes. Never
+    the same role as get_connection's app_role -- redeeming a token looks
+    approval_requests up by an opaque token before any tenant_id is known,
+    which app_role's ordinary RLS policies structurally cannot do.
+    """
+    conn = psycopg.connect(get_approval_redeemer_database_url())
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
 def get_storage() -> Storage:
     base_url = os.environ.get("SUPABASE_URL")
     service_key = os.environ.get("SUPABASE_SERVICE_KEY")

@@ -218,3 +218,76 @@ def test_missing_bot_token_raises_notification_error(monkeypatch: pytest.MonkeyP
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     with pytest.raises(NotificationError):
         TelegramNotifier()
+
+
+# --- edit_message / answer_callback_query ------------------------------------
+
+
+def test_edit_message_strips_the_keyboard_and_renders_text() -> None:
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 5}})
+
+    notifier = _notifier(handler)
+    notifier.edit_message("chat-1", "5", "Decision recorded: **approved**.")
+
+    assert len(requests) == 1
+    req = requests[0]
+    assert req.url == f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
+    payload = __import__("json").loads(req.content)
+    assert payload["chat_id"] == "chat-1"
+    assert payload["message_id"] == "5"
+    assert payload["reply_markup"] == {"inline_keyboard": []}
+    assert "*approved*" in payload["text"]
+
+
+def test_edit_message_5xx_is_retryable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"ok": False, "description": "Internal Server Error"})
+
+    notifier = _notifier(handler)
+    with pytest.raises(RetryableNotificationError):
+        notifier.edit_message("chat-1", "5", "t")
+
+
+def test_answer_callback_query_posts_expected_payload() -> None:
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True, "result": True})
+
+    notifier = _notifier(handler)
+    notifier.answer_callback_query("cbq-1", "Recorded: approved")
+
+    assert len(requests) == 1
+    req = requests[0]
+    assert req.url == f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery"
+    payload = __import__("json").loads(req.content)
+    assert payload == {"callback_query_id": "cbq-1", "text": "Recorded: approved"}
+
+
+def test_answer_callback_query_without_text_omits_it() -> None:
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True, "result": True})
+
+    notifier = _notifier(handler)
+    notifier.answer_callback_query("cbq-1")
+
+    payload = __import__("json").loads(requests[0].content)
+    assert payload == {"callback_query_id": "cbq-1"}
+
+
+def test_answer_callback_query_400_is_not_retryable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"ok": False, "description": "query is too old"})
+
+    notifier = _notifier(handler)
+    with pytest.raises(NotificationError) as exc_info:
+        notifier.answer_callback_query("cbq-1")
+    assert not isinstance(exc_info.value, RetryableNotificationError)

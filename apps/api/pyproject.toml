@@ -10,11 +10,13 @@ dependencies = [
     "python-multipart>=0.0.12",
     "core",
     "storage",
+    "notifiers",
 ]
 
 [tool.uv.sources]
 core = { workspace = true }
 storage = { workspace = true }
+notifiers = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

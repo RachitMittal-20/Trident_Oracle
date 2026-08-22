@@ -4,27 +4,40 @@ CLAUDE.md: "Do not put business logic in API route handlers."
 """
 
 import hashlib
+import hmac
+import os
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated
 
 import psycopg
+import structlog
+from core.errors import TokenError
 from core.magic_bytes import sniff_mime_type
 from core.models import Invoice, InvoiceStatus
-from fastapi import Depends, FastAPI, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse
+from notifiers.telegram import TelegramNotifier
 from storage.base import Storage
 
-from api import __version__, db
-from api.config import MAX_UPLOAD_BYTES, get_connection, get_storage
+from api import __version__, approvals, db
+from api.config import (
+    MAX_UPLOAD_BYTES,
+    get_approval_redeemer_connection,
+    get_connection,
+    get_storage,
+)
 from api.schemas import (
     DuplicateInvoiceDetail,
     FieldConfidenceResponse,
     InvoiceLineResponse,
     InvoiceResponse,
+    TelegramUpdate,
     UploadResponse,
 )
 
 app = FastAPI(title="Trident Oracle API")
+log = structlog.get_logger()
 
 SIGNED_URL_EXPIRES_IN_SECONDS = 300
 
@@ -159,3 +172,105 @@ def get_invoice(
         created_at=invoice["created_at"],
         updated_at=invoice["updated_at"],
     )
+
+
+# --- Approval endpoints -----------------------------------------------------
+#
+# All three below share one rule, security-critical: the raw token (a path
+# param here, a Telegram callback_data value below) is never written to a
+# log line by this codebase's own logging, and never echoed back in a
+# response body -- only structural facts (which TokenError subtype, an
+# invoice id, a decision) are logged. See api/approvals.py's module
+# docstring and core.errors.TokenError's docstring for the full reasoning,
+# including why all three TokenError subtypes must render identically to
+# the client rather than letting a response distinguish "expired" from
+# "already used" from "not found".
+
+
+@app.get("/v1/approvals/{token}", response_class=HTMLResponse)
+def get_approval_page(
+    token: str,
+    conn: Annotated[psycopg.Connection, Depends(get_approval_redeemer_connection)],
+) -> HTMLResponse:
+    try:
+        preview = approvals.preview_approval_token(conn, token)
+    except TokenError as exc:
+        log.info("approval_preview_rejected", reason=type(exc).__name__)
+        return HTMLResponse(approvals.render_failure_page(), status_code=410)
+    return HTMLResponse(approvals.render_approval_page(preview))
+
+
+@app.post("/v1/approvals/{token}", response_class=HTMLResponse)
+def post_approval_decision(
+    token: str,
+    decision: Annotated[str, Form()],
+    conn: Annotated[psycopg.Connection, Depends(get_approval_redeemer_connection)],
+) -> HTMLResponse:
+    if decision not in ("approved", "rejected"):
+        raise HTTPException(status_code=400, detail="decision must be 'approved' or 'rejected'")
+
+    # actor=None: this demo has no login-gated approval flow yet (see
+    # api/main.py's upload_invoice docstring on the same auth placeholder) --
+    # decided_by stays NULL, which approval_requests' schema already allows.
+    try:
+        result = approvals.redeem_approval_token(conn, token, decision, actor=None)  # type: ignore[arg-type]
+    except TokenError as exc:
+        log.info("approval_redeem_rejected", reason=type(exc).__name__)
+        return HTMLResponse(approvals.render_failure_page(), status_code=410)
+    return HTMLResponse(approvals.render_confirmation_page(result.decision))
+
+
+@app.post("/v1/approvals/telegram/callback")
+async def telegram_approval_callback(
+    request: Request,
+    conn: Annotated[psycopg.Connection, Depends(get_approval_redeemer_connection)],
+    x_telegram_bot_api_secret_token: Annotated[str | None, Header()] = None,
+) -> dict[str, bool]:
+    expected_secret = os.environ.get("TELEGRAM_WEBHOOK_SECRET")
+    if not expected_secret or not hmac.compare_digest(
+        x_telegram_bot_api_secret_token or "", expected_secret
+    ):
+        # Never distinguish "no header" from "wrong header" from "server
+        # misconfigured" -- all three read identically to whoever's asking.
+        raise HTTPException(status_code=401, detail="invalid webhook secret")
+
+    payload = await request.json()
+    update = TelegramUpdate.model_validate(payload)
+    callback = update.callback_query
+    if callback is None or callback.data is None or ":" not in callback.data:
+        # Not a callback_query this endpoint handles (Telegram sends other
+        # update types too) -- ack with 200 regardless, per Telegram's
+        # webhook contract, so it doesn't retry-storm us over something
+        # that will never resolve differently.
+        return {"ok": True}
+
+    decision_word, raw_token = callback.data.split(":", 1)
+    decision = {"approve": "approved", "reject": "rejected"}.get(decision_word)
+    notifier = TelegramNotifier()
+
+    if decision is None:
+        log.warning("telegram_callback_unknown_decision_word", decision_word=decision_word)
+        notifier.answer_callback_query(callback.id, approvals.GENERIC_TOKEN_FAILURE_MESSAGE)
+        return {"ok": True}
+
+    try:
+        result = approvals.redeem_approval_token(conn, raw_token, decision, actor=None)  # type: ignore[arg-type]
+    except TokenError as exc:
+        log.info("telegram_approval_redeem_rejected", reason=type(exc).__name__)
+        if callback.message is not None:
+            notifier.edit_message(
+                str(callback.message.chat.id),
+                str(callback.message.message_id),
+                approvals.GENERIC_TOKEN_FAILURE_MESSAGE,
+            )
+        notifier.answer_callback_query(callback.id, approvals.GENERIC_TOKEN_FAILURE_MESSAGE)
+        return {"ok": True}
+
+    if callback.message is not None:
+        notifier.edit_message(
+            str(callback.message.chat.id),
+            str(callback.message.message_id),
+            f"Decision recorded: **{result.decision}**.",
+        )
+    notifier.answer_callback_query(callback.id, f"Recorded: {result.decision}")
+    return {"ok": True}

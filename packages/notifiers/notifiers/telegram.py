@@ -104,6 +104,47 @@ class TelegramNotifier(Notifier):
             for action in message.actions
         ]
 
+    def _call(self, method: str, payload: dict[str, object]) -> dict[str, object]:
+        """POSTs to one Bot API method and returns its parsed `result`,
+        applying the same retry classification (429/5xx/other 4xx) to
+        every call this class makes -- send, edit_message, and
+        answer_callback_query all share this, rather than each
+        re-implementing it slightly differently.
+        """
+        try:
+            response = self._client.post(
+                f"{self._api_base}/bot{self._token}/{method}", json=payload
+            )
+        except httpx.HTTPError as exc:
+            raise RetryableNotificationError(f"Telegram request failed: {exc}") from exc
+
+        body_json = response.json() if response.content else {}
+
+        if response.status_code == 429:
+            retry_after = None
+            params = body_json.get("parameters") if isinstance(body_json, dict) else None
+            if isinstance(params, dict):
+                retry_after = params.get("retry_after")
+            header_retry_after = response.headers.get("retry-after")
+            if retry_after is None and header_retry_after is not None:
+                retry_after = header_retry_after
+            raise RetryableNotificationError(
+                f"Telegram rate limit hit calling {method}",
+                retry_after=float(retry_after) if retry_after is not None else None,
+            )
+
+        if response.status_code >= 500:
+            raise RetryableNotificationError(
+                f"Telegram server error {response.status_code} calling {method}: {response.text}"
+            )
+
+        if response.status_code >= 400 or not body_json.get("ok"):
+            description = body_json.get("description", response.text)
+            raise NotificationError(f"Telegram {method} failed: {description}")
+
+        result = body_json.get("result", {})
+        return result if isinstance(result, dict) else {}
+
     def send(
         self, recipient: str, message: NotificationMessage, idempotency_key: str
     ) -> DeliveryResult:
@@ -120,40 +161,34 @@ class TelegramNotifier(Notifier):
         if keyboard is not None:
             payload["reply_markup"] = {"inline_keyboard": keyboard}
 
-        try:
-            response = self._client.post(
-                f"{self._api_base}/bot{self._token}/sendMessage", json=payload
-            )
-        except httpx.HTTPError as exc:
-            raise RetryableNotificationError(f"Telegram request failed: {exc}") from exc
-
-        body_json = response.json() if response.content else {}
-
-        if response.status_code == 429:
-            retry_after = None
-            params = body_json.get("parameters") if isinstance(body_json, dict) else None
-            if isinstance(params, dict):
-                retry_after = params.get("retry_after")
-            header_retry_after = response.headers.get("retry-after")
-            if retry_after is None and header_retry_after is not None:
-                retry_after = header_retry_after
-            raise RetryableNotificationError(
-                f"Telegram rate limit hit for chat {recipient}",
-                retry_after=float(retry_after) if retry_after is not None else None,
-            )
-
-        if response.status_code >= 500:
-            raise RetryableNotificationError(
-                f"Telegram server error {response.status_code}: {response.text}"
-            )
-
-        if response.status_code >= 400 or not body_json.get("ok"):
-            description = body_json.get("description", response.text)
-            raise NotificationError(f"Telegram sendMessage failed: {description}")
-
-        result = body_json.get("result", {})
+        result = self._call("sendMessage", payload)
         message_id = result.get("message_id")
         return DeliveryResult(
             provider_message_id=str(message_id) if message_id is not None else None,
             channel="telegram",
         )
+
+    def edit_message(self, chat_id: str, message_id: str, text: str) -> None:
+        """Edits a previously sent message -- used after an approval
+        decision is redeemed, to show the outcome and remove the (now
+        stale, single-use) inline keyboard so it can't be tapped a second
+        time. Explicitly passes an empty inline_keyboard: editMessageText
+        alone leaves whatever reply_markup the original message had.
+        """
+        payload: dict[str, object] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": render_markdown_v2(text),
+            "parse_mode": "MarkdownV2",
+            "reply_markup": {"inline_keyboard": []},
+        }
+        self._call("editMessageText", payload)
+
+    def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> None:
+        """Closes the loading spinner Telegram shows on the tapping client
+        until this is called -- should follow every callback_query this
+        bot handles, success or failure."""
+        payload: dict[str, object] = {"callback_query_id": callback_query_id}
+        if text is not None:
+            payload["text"] = text
+        self._call("answerCallbackQuery", payload)

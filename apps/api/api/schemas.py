@@ -38,6 +38,30 @@ class FieldConfidenceResponse(BaseModel):
     raw_text: str | None
 
 
+class TelegramChat(BaseModel):
+    id: int
+
+
+class TelegramMessage(BaseModel):
+    message_id: int
+    chat: TelegramChat
+
+
+class TelegramCallbackQuery(BaseModel):
+    id: str
+    data: str | None = None
+    message: TelegramMessage | None = None
+
+
+class TelegramUpdate(BaseModel):
+    """Only the piece of Telegram's webhook Update object this codebase
+    actually reads -- extra fields on the real payload are ignored, not
+    rejected, per Telegram's own forward-compatibility expectations for
+    webhook consumers."""
+
+    callback_query: TelegramCallbackQuery | None = None
+
+
 class InvoiceResponse(BaseModel):
     id: uuid.UUID
     tenant_id: uuid.UUID

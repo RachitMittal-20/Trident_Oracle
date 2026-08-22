@@ -24,6 +24,10 @@ Never edit a committed migration; add a new numbered file instead.
 0016_invoices_allow_mock_backend.sql  extraction_backend CHECK also allows 'mock'
                        (MockExtractor's real, named backend value -- see
                        packages/extractors/factory.py)
+0017_match_exceptions_detail.sql  match_exceptions.detail -- human-readable
+                       reasoning from core.matching's MatchFinding/DuplicateFinding
+0018_approval_requests_token_hash_unique.sql  UNIQUE(token_hash)
+0019_approval_redeemer_role.sql  approval_redeemer role (see "Security model" below)
 ```
 
 ## Applying against Supabase
@@ -102,7 +106,7 @@ so would be misleading rather than protective.
 
 ## Security model
 
-Two Postgres roles, two jobs:
+Three Postgres roles, three jobs:
 
 **`app_role`** (0013_app_role.sql) is the ordinary, fully RLS-restricted
 connection. The API uses it per-request; the worker uses it per-job for
@@ -159,11 +163,68 @@ policy's shape ever changes. A role-level `BYPASSRLS` is the standard Postgres
 idiom for "this role is infrastructure, not a tenant" — one flag, visible
 directly in `\du`, rather than logic spread across policy definitions.
 
-Both roles' passwords/credentials are provisioned outside migrations, like
-every other secret — see `.env.example`'s `QUEUE_CLAIMER_DATABASE_URL` and
-`DATABASE_URL`. Applying `db/migrations/` alone, in order, against a fresh
-Postgres instance is enough to reproduce the entire RLS story — both roles,
-every grant, every policy — without any manual `CREATE ROLE` step.
+**`approval_redeemer`** (0019_approval_redeemer_role.sql) exists for the same
+shape of problem as `queue_claimer`, one level up the stack: redeeming an
+approval token (`apps/api/api/approvals.py`) means looking `approval_requests`
+up by `token_hash` *before* knowing which tenant that row belongs to — the
+caller presents only an opaque token (a Telegram callback, a clicked email
+link), never `app.tenant_id`. `tenant_isolation` denies by default when
+`app.tenant_id` is unset, so that first lookup is structurally impossible
+under `app_role`.
+
+Unlike `queue_claimer`, `approval_redeemer` is **narrower** than `app_role`'s
+own RLS exposure, not broader — it is `NOSUPERUSER NOBYPASSRLS`, with grants
+on `approval_requests`/`invoices`/`match_exceptions`/`jobs`/`audit_log`
+*identical* to `app_role`'s own grants on those five tables, and is subject
+to `tenant_isolation` on all five exactly as `app_role` is. The only
+addition is one extra, permissive policy —
+`approval_redeemer_token_lookup`, `FOR SELECT ... TO approval_redeemer
+USING (true)` — on `approval_requests` alone. That policy is additive
+(Postgres OR's permissive policies of the same command type together), so
+it doesn't touch `tenant_isolation`'s own `SELECT` policy on that table for
+`app_role` or anyone else, and it grants no `INSERT`/`UPDATE` reach:
+`approval_redeemer`'s writes to `approval_requests` remain governed solely
+by `tenant_isolation`'s own `USING`/`WITH CHECK`, same as every other grant
+this role has.
+
+Why this matters, and why it's the opposite trade-off from `queue_claimer`:
+`queue_claimer`'s `BYPASSRLS` removes RLS as a safeguard *entirely* on the
+two tables it touches — safe there only because neither table holds tenant
+business data, so there's nothing behind RLS for a bug in that role's code
+to leak. `approval_redeemer` **is** granted on tables that hold real tenant
+business data (`invoices`, `match_exceptions`), so leaving `tenant_isolation`
+fully live and enforced on those tables is a real second line of defense: if
+`apps/api/api/approvals.py` ever had a bug that mishandled `tenant_id` —
+read or wrote the wrong tenant's invoice because of a coding mistake, not a
+malicious token — `tenant_isolation` would still catch it and deny the
+query, exactly the protection `app_role` gets everywhere. The one place this
+role can see across tenants is a single `SELECT` on a single table, for the
+one purpose the whole token mechanism structurally requires: discovering
+which tenant a bare, presented token belongs to before `app.tenant_id` can
+be set at all. Every other read, and every write anywhere, stays exactly as
+tenant-scoped as it is for `app_role`.
+
+The resulting shape in `apps/api/api/approvals.py` is two steps, not one:
+(1) a plain `SELECT` (never `SELECT ... FOR UPDATE`) on `approval_requests`,
+relying on the permissive policy to find the row and read its `tenant_id`
+across every tenant — deliberately not a locking read, since Postgres
+requires a `FOR UPDATE`/`FOR SHARE` SELECT's rows to satisfy *both* the
+SELECT policy's and the UPDATE policy's `USING` clause, and
+`tenant_isolation`'s UPDATE policy cannot pass yet at that point; then (2)
+`set_config('app.tenant_id', ...)` on that same connection/transaction,
+immediately, after which every remaining statement — including a second,
+locking `SELECT ... FOR UPDATE` by id to actually take the row lock the
+single-use guarantee depends on, the token-consuming `UPDATE`, the invoice
+transition, resolving `match_exceptions`, the `audit_log` write, and the
+`post` job `INSERT` — runs under ordinary `tenant_isolation`, identical to
+`app_role`.
+
+All three roles' passwords/credentials are provisioned outside migrations,
+like every other secret — see `.env.example`'s `QUEUE_CLAIMER_DATABASE_URL`,
+`DATABASE_URL`, and `APPROVAL_REDEEMER_DATABASE_URL`. Applying
+`db/migrations/` alone, in order, against a fresh Postgres instance is enough
+to reproduce the entire RLS story — every role, every grant, every policy —
+without any manual `CREATE ROLE` step.
 
 ## Known scope limits
 
