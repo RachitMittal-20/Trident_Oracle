@@ -32,6 +32,7 @@ import structlog.testing
 from api import approvals
 from api.config import get_approval_redeemer_connection
 from api.main import app
+from approval_tokens import issue_approval_token
 from core.errors import TokenAlreadyUsed, TokenExpired, TokenNotFound
 from fastapi.testclient import TestClient
 from psycopg.rows import dict_row
@@ -146,7 +147,7 @@ def _make_open_exception(
 def _issue(
     conn: psycopg.Connection, tenant_id: uuid.UUID, invoice_id: uuid.UUID, exception_id: uuid.UUID
 ) -> str:
-    return approvals.issue_approval_token(
+    return issue_approval_token(
         conn,
         tenant_id=tenant_id,
         invoice_id=invoice_id,

@@ -11,6 +11,7 @@ resolution-markers = [
 [manifest]
 members = [
     "api",
+    "approval-tokens",
     "core",
     "evals",
     "extractors",
@@ -56,6 +57,7 @@ name = "api"
 version = "0.1.0"
 source = { editable = "apps/api" }
 dependencies = [
+    { name = "approval-tokens" },
     { name = "core" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -68,6 +70,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "approval-tokens", editable = "packages/approval_tokens" },
     { name = "core", editable = "packages/core" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
@@ -76,6 +79,21 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.12" },
     { name = "storage", editable = "packages/storage" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
+]
+
+[[package]]
+name = "approval-tokens"
+version = "0.1.0"
+source = { editable = "packages/approval_tokens" }
+dependencies = [
+    { name = "core" },
+    { name = "psycopg", extra = ["binary"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "core", editable = "packages/core" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
 ]
 
 [[package]]
@@ -2086,8 +2104,10 @@ name = "worker"
 version = "0.1.0"
 source = { editable = "apps/worker" }
 dependencies = [
+    { name = "approval-tokens" },
     { name = "core" },
     { name = "extractors" },
+    { name = "notifiers" },
     { name = "psycopg", extra = ["binary"] },
     { name = "storage" },
     { name = "structlog" },
@@ -2095,8 +2115,10 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "approval-tokens", editable = "packages/approval_tokens" },
     { name = "core", editable = "packages/core" },
     { name = "extractors", editable = "packages/extractors" },
+    { name = "notifiers", editable = "packages/notifiers" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "storage", editable = "packages/storage" },
     { name = "structlog", specifier = ">=24.4" },

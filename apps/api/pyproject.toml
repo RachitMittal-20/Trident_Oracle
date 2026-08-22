@@ -11,12 +11,14 @@ dependencies = [
     "core",
     "storage",
     "notifiers",
+    "approval-tokens",
 ]
 
 [tool.uv.sources]
 core = { workspace = true }
 storage = { workspace = true }
 notifiers = { workspace = true }
+approval-tokens = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

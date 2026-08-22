@@ -25,26 +25,29 @@ goods_receipt_lines, invoice_lines, match_runs, and match_exceptions all
 carry their own tenant_id column for RLS, so none of the _row_to_* helpers
 below need to borrow tenant_id from a parent row.
 
-Approver contact resolution (_resolve_approver_contacts) and token issuance
-(_issue_approval_token) are implemented locally here rather than imported
-from apps/api/api/approvals.py -- apps/api and apps/worker are separate
-deployables that don't depend on each other (see api/db.py's own docstring
-for the same reasoning re: enqueue_job mirroring JobQueue.enqueue instead of
-importing it). tenant_id is already known at this point (this handler's
-connection already has app.tenant_id set for the claimed job), so issuing a
-token here has none of api/approvals.py's chicken-and-egg problem -- this
-INSERT runs under ordinary tenant_isolation, like every other write this
-handler makes.
+Approver contact resolution (_resolve_approver_contacts) is implemented
+locally here -- it's worker-specific (nothing else needs "the N earliest
+approver users for a tenant"). Token issuance itself is NOT local: it's
+imported from packages/approval_tokens, shared with
+apps/api/api/approvals.py the same way both deployables already share
+packages/notifiers -- a real, I/O-performing library, not a pure one --
+rather than one importing from the other (apps/api and apps/worker stay
+independent deployables). tenant_id is already known at this point (this
+handler's connection already has app.tenant_id set for the claimed job), so
+issuing a token here has none of api/approvals.py's redemption-side
+chicken-and-egg problem -- issue_approval_token's own INSERT runs under
+ordinary tenant_isolation, like every other write this handler makes.
 """
 
 import hashlib
 import os
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Any
 
 import psycopg
 import structlog
+from approval_tokens import issue_approval_token
 from core.decision import Decision, decide
 from core.errors import MatchingError, PolicyViolation
 from core.matching.duplicates import InvoiceSummary
@@ -65,7 +68,6 @@ from core.models import (
 from core.policy import load_tolerance_policy
 from core.queue.models import Job
 from core.state_machine import validate_transition
-from core.tokens import mint_approval_token
 from psycopg.rows import DictRow, dict_row
 from psycopg.types.json import Jsonb
 
@@ -296,41 +298,6 @@ def _persist_match_exceptions(
     return exception_ids
 
 
-def _issue_approval_token(
-    conn: psycopg.Connection[Any],
-    tenant_id: uuid.UUID,
-    invoice_id: uuid.UUID,
-    exception_id: uuid.UUID | None,
-    recipient: str,
-    channel: str,
-) -> str:
-    """Mints a new approval token, persists ONLY its hash, and returns the
-    raw token exactly once -- never logged. See this module's docstring for
-    why this duplicates (rather than imports) apps/api/api/approvals.py's
-    issue_approval_token.
-    """
-    issued = mint_approval_token(APPROVAL_TOKEN_TTL, now=datetime.now(UTC))
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO approval_requests
-                (tenant_id, invoice_id, exception_id, token_hash, channel, recipient, expires_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                tenant_id,
-                invoice_id,
-                exception_id,
-                issued.token_hash,
-                channel,
-                recipient,
-                issued.expires_at,
-            ),
-        )
-    conn.commit()
-    return issued.raw_token
-
-
 def _resolve_approver_contacts(
     conn: psycopg.Connection[Any], tenant_id: uuid.UUID, limit: int
 ) -> list[DictRow]:
@@ -429,8 +396,14 @@ def _apply_decision(
         channel = "telegram" if approver["telegram_chat_id"] else "email"
         recipient = approver["telegram_chat_id"] or approver["email"]
 
-        raw_token = _issue_approval_token(
-            conn, tenant_id, invoice_id, exception_id, recipient, channel
+        raw_token = issue_approval_token(
+            conn,
+            tenant_id=tenant_id,
+            invoice_id=invoice_id,
+            exception_id=exception_id,
+            recipient=recipient,
+            channel=channel,  # type: ignore[arg-type]
+            ttl=APPROVAL_TOKEN_TTL,
         )
         # Telegram renders its own inline keyboard from `actions`
         # (notifiers/telegram.py); the email channel has no equivalent, so

@@ -49,7 +49,12 @@ worth keeping distinct rather than treating as one blanket mechanism:
 issue_approval_token needs neither treatment: its caller already knows
 tenant_id (it isn't resolving one from a bare token), so it does exactly
 one set_config, then one INSERT -- no unlocked/locked split, no multi-table
-read to sequence.
+read to sequence. It's no longer defined in this module at all --
+apps/worker/worker/match_handler.py needs the exact same logic (it mints one
+token per resolved approver before enqueueing their notify job), so it now
+lives in packages/approval_tokens, a shared library both deployables depend
+on, the same way both already depend on packages/notifiers. See that
+package's docstring for the full reasoning.
 
 Security-critical section -- the raw token must never be logged. Every log
 call in this module logs only exception_type names, invoice ids, and
@@ -60,7 +65,7 @@ import hashlib
 import html
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Literal
 
@@ -69,14 +74,13 @@ import structlog
 from core.errors import TokenAlreadyUsed, TokenExpired, TokenNotFound
 from core.models import InvoiceStatus
 from core.state_machine import validate_transition
-from core.tokens import hash_token, is_expired, mint_approval_token, tokens_match
+from core.tokens import hash_token, is_expired, tokens_match
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 log = structlog.get_logger()
 
 Decision = Literal["approved", "rejected"]
-ApprovalChannel = Literal["telegram", "email", "whatsapp"]
 
 # Shown to every client (Telegram message edit, email confirmation page, the
 # POST JSON response) for all three TokenError subtypes alike -- see
@@ -105,57 +109,6 @@ class RedeemedApproval:
     decision: Decision
     decided_by: uuid.UUID | None
     decided_at: datetime
-
-
-def issue_approval_token(
-    conn: psycopg.Connection,
-    *,
-    tenant_id: uuid.UUID,
-    invoice_id: uuid.UUID,
-    exception_id: uuid.UUID | None,
-    recipient: str,
-    channel: ApprovalChannel,
-    ttl: timedelta,
-) -> str:
-    """Mints a new approval token, persists ONLY its hash, and returns the
-    raw token exactly once. The caller -- the 'notify' job handler -- is
-    responsible for putting it straight into the outbound message (a
-    Telegram callback_data value or an /approve/{token} email link) and for
-    never logging it; this function doesn't log it either.
-    """
-    issued = mint_approval_token(ttl, now=datetime.now(UTC))
-    with conn.cursor() as cur:
-        # tenant_isolation's WITH CHECK (approval_redeemer is no longer
-        # BYPASSRLS) requires this before the INSERT below, same as any
-        # app_role write -- tenant_id is already known here (unlike
-        # redemption), so there's no chicken-and-egg problem to solve.
-        cur.execute("SELECT set_config('app.tenant_id', %s, false)", (str(tenant_id),))
-        cur.execute(
-            """
-            INSERT INTO approval_requests
-                (tenant_id, invoice_id, exception_id, token_hash, channel, recipient, expires_at)
-            VALUES (%(tenant_id)s, %(invoice_id)s, %(exception_id)s, %(token_hash)s,
-                    %(channel)s, %(recipient)s, %(expires_at)s)
-            """,
-            {
-                "tenant_id": tenant_id,
-                "invoice_id": invoice_id,
-                "exception_id": exception_id,
-                "token_hash": issued.token_hash,
-                "channel": channel,
-                "recipient": recipient,
-                "expires_at": issued.expires_at,
-            },
-        )
-    conn.commit()
-    log.info(
-        "approval_token_issued",
-        invoice_id=str(invoice_id),
-        exception_id=str(exception_id) if exception_id else None,
-        channel=channel,
-        expires_at=issued.expires_at.isoformat(),
-    )
-    return issued.raw_token
 
 
 def preview_approval_token(conn: psycopg.Connection, raw_token: str) -> ApprovalPreview:
