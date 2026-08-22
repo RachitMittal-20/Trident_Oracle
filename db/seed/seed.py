@@ -107,21 +107,46 @@ def build_tenant() -> Tenant:
     )
 
 
-def build_users(tenant_id: uuid.UUID) -> list[tuple[uuid.UUID, uuid.UUID, str, str, datetime]]:
-    # (id, tenant_id, email, role, created_at) -- users has no core dataclass
-    # (it's an auth-adjacent table, not part of the matching domain), so this
-    # stays a plain tuple list rather than going through core.
+def build_users(
+    tenant_id: uuid.UUID,
+) -> list[tuple[uuid.UUID, uuid.UUID, str, str, datetime, str | None]]:
+    # (id, tenant_id, email, role, created_at, telegram_chat_id) -- users has
+    # no core dataclass (it's an auth-adjacent table, not part of the
+    # matching domain), so this stays a plain tuple list rather than going
+    # through core.
+    #
+    # telegram_chat_id is a placeholder value, deliberately not a real chat
+    # id: seed.py is committed to version control and meant to be a
+    # repeatable fixture, not tied to any one developer's personal Telegram
+    # account. Replace it with your own bot's chat id (see CLAUDE.md's
+    # Telegram env vars) to exercise the live notify pipeline against this
+    # seeded approver.
     created_at = datetime(2026, 5, 1, tzinfo=UTC)
     return [
-        (seed_id("user:admin"), tenant_id, "admin@doritech-demo.example", "admin", created_at),
+        (
+            seed_id("user:admin"),
+            tenant_id,
+            "admin@doritech-demo.example",
+            "admin",
+            created_at,
+            None,
+        ),
         (
             seed_id("user:approver"),
             tenant_id,
             "approver@doritech-demo.example",
             "approver",
             created_at,
+            "000000001",
         ),
-        (seed_id("user:clerk"), tenant_id, "clerk@doritech-demo.example", "clerk", created_at),
+        (
+            seed_id("user:clerk"),
+            tenant_id,
+            "clerk@doritech-demo.example",
+            "clerk",
+            created_at,
+            None,
+        ),
     ]
 
 
@@ -335,7 +360,12 @@ def main() -> None:
     with psycopg.connect(database_url, autocommit=False) as conn:
         with conn.cursor() as cur:
             upsert(cur, "tenants", ["id", "name", "slug", "created_at"], [astuple(tenant)])
-            upsert(cur, "users", ["id", "tenant_id", "email", "role", "created_at"], users)
+            upsert(
+                cur,
+                "users",
+                ["id", "tenant_id", "email", "role", "created_at", "telegram_chat_id"],
+                users,
+            )
             upsert(
                 cur,
                 "vendors",

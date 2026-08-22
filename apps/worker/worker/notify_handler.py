@@ -13,17 +13,13 @@ job.payload contract -- whoever enqueues a 'notify' job must supply:
     body:         str   -- markdown, this codebase's own **bold**-only convention
     actions:      list[{"label": str, "action_id": str, "style": str}]  -- optional
 
-KNOWN GAP: apps/worker/worker/match_handler.py's own notify-enqueue call does
-not yet supply recipient/channel/title/body -- this project has no
-per-tenant approver/notification-preference directory yet (which channel and
-address to notify for a given tenant/exception is a separate, unaddressed
-feature, not something to improvise here). Until that exists, a real notify
-job enqueued by match_handler.py will fail loudly with a clear KeyError
-rather than silently sending nowhere -- CLAUDE.md principle 7, "fail loudly
-in development." match_handler.py's enqueue call does set max_attempts=5 on
-these jobs already, since that part -- how many times to retry -- is this
-handler's concern regardless of who eventually supplies the rest of the
-payload.
+apps/worker/worker/match_handler.py's notify-enqueue call is the real
+producer of this payload: it resolves decision.required_approvers actual
+approver contacts (users.telegram_chat_id if set, else users.email --
+db/migrations/0021_users_telegram_chat_id.sql), mints one approval token per
+approver (its own _issue_approval_token, not imported from
+apps/api/api/approvals.py -- see match_handler.py's module docstring for
+why), and enqueues one notify job per approver with max_attempts=5.
 
 Idempotency: the INSERT into notification_deliveries happens BEFORE the
 notifier is ever called, via the same idempotent-upsert trick

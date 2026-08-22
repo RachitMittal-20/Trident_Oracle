@@ -24,11 +24,23 @@ Every DB row this handler reads has tenant_id denormalized onto it directly
 goods_receipt_lines, invoice_lines, match_runs, and match_exceptions all
 carry their own tenant_id column for RLS, so none of the _row_to_* helpers
 below need to borrow tenant_id from a parent row.
+
+Approver contact resolution (_resolve_approver_contacts) and token issuance
+(_issue_approval_token) are implemented locally here rather than imported
+from apps/api/api/approvals.py -- apps/api and apps/worker are separate
+deployables that don't depend on each other (see api/db.py's own docstring
+for the same reasoning re: enqueue_job mirroring JobQueue.enqueue instead of
+importing it). tenant_id is already known at this point (this handler's
+connection already has app.tenant_id set for the claimed job), so issuing a
+token here has none of api/approvals.py's chicken-and-egg problem -- this
+INSERT runs under ordinary tenant_isolation, like every other write this
+handler makes.
 """
 
 import hashlib
+import os
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import psycopg
@@ -47,17 +59,21 @@ from core.models import (
     MatchMethod,
     PurchaseOrder,
     PurchaseOrderLine,
+    Severity,
     Vendor,
 )
 from core.policy import load_tolerance_policy
 from core.queue.models import Job
 from core.state_machine import validate_transition
+from core.tokens import mint_approval_token
 from psycopg.rows import DictRow, dict_row
 from psycopg.types.json import Jsonb
 
 from worker.db import JobQueue
 
 log = structlog.get_logger()
+
+APPROVAL_TOKEN_TTL = timedelta(hours=72)
 
 
 def _transition(
@@ -240,7 +256,13 @@ def _persist_match_exceptions(
     match_run_id: uuid.UUID,
     invoice_id: uuid.UUID,
     findings: tuple[MatchFinding, ...],
-) -> None:
+) -> list[uuid.UUID]:
+    """Returns the persisted row ids, in the same order as `findings` -- so
+    the caller can attach the right match_exceptions.id to an approval
+    token/notify job (approval_requests.exception_id) without a second
+    round trip.
+    """
+    exception_ids: list[uuid.UUID] = []
     with conn.cursor() as cur:
         for finding in findings:
             cur.execute(
@@ -249,6 +271,7 @@ def _persist_match_exceptions(
                     (tenant_id, match_run_id, invoice_id, exception_type, severity, po_line_id,
                      invoice_line_id, expected_value, actual_value, delta, delta_pct, detail)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
                 """,
                 (
                     tenant_id,
@@ -265,7 +288,67 @@ def _persist_match_exceptions(
                     finding.detail,
                 ),
             )
+            row = cur.fetchone()
+            if row is None:
+                raise RuntimeError("match_exceptions INSERT ... RETURNING produced no row")
+            exception_ids.append(row[0])
     conn.commit()
+    return exception_ids
+
+
+def _issue_approval_token(
+    conn: psycopg.Connection[Any],
+    tenant_id: uuid.UUID,
+    invoice_id: uuid.UUID,
+    exception_id: uuid.UUID | None,
+    recipient: str,
+    channel: str,
+) -> str:
+    """Mints a new approval token, persists ONLY its hash, and returns the
+    raw token exactly once -- never logged. See this module's docstring for
+    why this duplicates (rather than imports) apps/api/api/approvals.py's
+    issue_approval_token.
+    """
+    issued = mint_approval_token(APPROVAL_TOKEN_TTL, now=datetime.now(UTC))
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO approval_requests
+                (tenant_id, invoice_id, exception_id, token_hash, channel, recipient, expires_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                tenant_id,
+                invoice_id,
+                exception_id,
+                issued.token_hash,
+                channel,
+                recipient,
+                issued.expires_at,
+            ),
+        )
+    conn.commit()
+    return issued.raw_token
+
+
+def _resolve_approver_contacts(
+    conn: psycopg.Connection[Any], tenant_id: uuid.UUID, limit: int
+) -> list[DictRow]:
+    """The `limit` earliest-created approver users for this tenant --
+    exactly `decision.required_approvers` of them. Whichever channel each
+    one has a contact for wins: telegram_chat_id if set, otherwise email
+    (always populated, db/migrations/0002_tenancy.sql)."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """
+            SELECT id, email, telegram_chat_id FROM users
+            WHERE tenant_id = %s AND role = 'approver'
+            ORDER BY created_at
+            LIMIT %s
+            """,
+            (tenant_id, limit),
+        )
+        return cur.fetchall()
 
 
 def _apply_decision(
@@ -275,6 +358,7 @@ def _apply_decision(
     tenant_id: uuid.UUID,
     decision: Decision,
     match_result: ThreeWayMatchResult,
+    exception_ids: list[uuid.UUID],
 ) -> None:
     if decision.outcome == "NEEDS_VERIFICATION":
         _transition(
@@ -318,25 +402,74 @@ def _apply_decision(
         InvoiceStatus.PENDING_APPROVAL,
         extra_audit={"reason": decision.reason, "required_approvers": decision.required_approvers},
     )
-    notify_idempotency_key = hashlib.sha256(
-        f"{tenant_id}:{invoice_id}:notify:pending_approval".encode()
-    ).hexdigest()
-    # max_attempts=5, not the jobs table's default of 3 -- worker.notify_handler
-    # retries a RetryableNotificationError up to 5 times. This payload does
-    # NOT yet satisfy notify_handler's full contract (recipient/channel/
-    # title/body) -- see that module's docstring for why that gap is
-    # deliberately left open rather than improvised here.
-    queue.enqueue(
-        JobType.NOTIFY,
-        {
-            "invoice_id": str(invoice_id),
-            "reason": decision.reason,
-            "required_approvers": decision.required_approvers,
-        },
-        tenant_id,
-        notify_idempotency_key,
-        max_attempts=5,
+    # The specific exception this approval is about, if any: the first
+    # BLOCK-severity finding's persisted id -- mirrors
+    # approval_requests.exception_id's own nullability (a clean-but-large
+    # invoice needing dual approval has no specific exception attached).
+    exception_id = next(
+        (
+            eid
+            for finding, eid in zip(match_result.findings, exception_ids, strict=True)
+            if finding.severity == Severity.BLOCK
+        ),
+        None,
     )
+
+    approvers = _resolve_approver_contacts(conn, tenant_id, decision.required_approvers)
+    if not approvers:
+        log.warning(
+            "no_approver_contacts_found",
+            tenant_id=str(tenant_id),
+            invoice_id=str(invoice_id),
+            required_approvers=decision.required_approvers,
+        )
+
+    app_base_url = os.environ.get("APP_BASE_URL", "").rstrip("/")
+    for approver in approvers:
+        channel = "telegram" if approver["telegram_chat_id"] else "email"
+        recipient = approver["telegram_chat_id"] or approver["email"]
+
+        raw_token = _issue_approval_token(
+            conn, tenant_id, invoice_id, exception_id, recipient, channel
+        )
+        # Telegram renders its own inline keyboard from `actions`
+        # (notifiers/telegram.py); the email channel has no equivalent, so
+        # its body carries the /approve/{token} link directly instead
+        # (notifiers/email.py already builds that same link shape from
+        # action_id -- see its module docstring).
+        if channel == "telegram":
+            actions = [
+                {"label": "Approve", "action_id": f"approve:{raw_token}", "style": "primary"},
+                {"label": "Reject", "action_id": f"reject:{raw_token}", "style": "danger"},
+            ]
+            body = decision.reason
+        else:
+            actions = [
+                {"label": "Approve", "action_id": raw_token, "style": "primary"},
+            ]
+            body = f"{decision.reason}\n\nReview: {app_base_url}/approve/{raw_token}"
+
+        notify_idempotency_key = hashlib.sha256(
+            f"{tenant_id}:{invoice_id}:{approver['id']}:notify".encode()
+        ).hexdigest()
+        # max_attempts=5, not the jobs table's default of 3 --
+        # worker.notify_handler retries a RetryableNotificationError up to
+        # 5 times.
+        queue.enqueue(
+            JobType.NOTIFY,
+            {
+                "invoice_id": str(invoice_id),
+                "exception_id": str(exception_id) if exception_id else None,
+                "recipient": recipient,
+                "channel": channel,
+                "title": "Invoice needs approval",
+                "body": body,
+                "actions": actions,
+            },
+            tenant_id,
+            notify_idempotency_key,
+            max_attempts=5,
+        )
 
 
 # --- The handler ---------------------------------------------------------
@@ -470,10 +603,12 @@ def handle_match(conn: psycopg.Connection[Any], queue: JobQueue, job: Job) -> No
     match_run_id = _persist_match_run(
         conn, tenant_id, invoice_id, policy.version, match_result, duration_ms
     )
-    _persist_match_exceptions(conn, tenant_id, match_run_id, invoice_id, match_result.findings)
+    exception_ids = _persist_match_exceptions(
+        conn, tenant_id, match_run_id, invoice_id, match_result.findings
+    )
 
     decision = decide(match_result, invoice.overall_confidence, invoice, policy)
-    _apply_decision(conn, queue, invoice_id, tenant_id, decision, match_result)
+    _apply_decision(conn, queue, invoice_id, tenant_id, decision, match_result, exception_ids)
 
     log.info(
         "match_completed",

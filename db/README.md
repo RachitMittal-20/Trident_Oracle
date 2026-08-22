@@ -30,6 +30,8 @@ Never edit a committed migration; add a new numbered file instead.
 0019_approval_redeemer_role.sql  approval_redeemer role (see "Security model" below)
 0020_notification_deliveries_invoice_context.sql  invoice_id/exception_id on
                        notification_deliveries, for GET /v1/deliveries
+0021_users_telegram_chat_id.sql  users.telegram_chat_id, for the notify
+                       pipeline to resolve a real approver's contact info
 ```
 
 ## Applying against Supabase

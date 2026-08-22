@@ -305,8 +305,22 @@ def test_price_variance_beyond_tolerance_blocks_and_notifies(
         )
         notify_job = cur.fetchone()
     assert notify_job is not None
-    assert notify_job["payload"]["invoice_id"] == str(invoice_id)
-    assert "reason" in notify_job["payload"]
+    payload = notify_job["payload"]
+    assert payload["invoice_id"] == str(invoice_id)
+    assert payload["exception_id"] == str(exceptions[0]["id"])
+    # _make_po_with_grn seeds one approver (email only, no telegram_chat_id)
+    # -- channel resolution must fall back to email for them.
+    assert payload["channel"] == "email"
+    assert payload["recipient"].endswith("@example.com")
+    assert "blocking exception" in payload["body"]
+    assert payload["actions"], "email channel still gets an Approve action_id/link"
+
+    with admin_conn.cursor(row_factory=dict_row) as cur:
+        cur.execute("SELECT * FROM approval_requests WHERE invoice_id = %s", (invoice_id,))
+        approval_request = cur.fetchone()
+    assert approval_request is not None
+    assert approval_request["channel"] == "email"
+    assert approval_request["exception_id"] == exceptions[0]["id"]
 
 
 def test_low_confidence_needs_verification_and_does_not_notify(
