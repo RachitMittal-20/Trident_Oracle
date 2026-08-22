@@ -32,3 +32,8 @@ class TokenError(TridentOracleError):
 class StorageError(TridentOracleError):
     """A file storage backend (Supabase Storage) failed to upload, download,
     or sign a URL for an object."""
+
+
+class NotificationError(TridentOracleError):
+    """A notification backend (Telegram, email, WhatsApp) failed to send a
+    message."""
