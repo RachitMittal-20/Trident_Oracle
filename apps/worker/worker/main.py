@@ -47,6 +47,7 @@ from storage.supabase_storage import SupabaseStorage
 
 from worker.db import DEFAULT_BASE_DELAY, JobQueue
 from worker.extract_handler import make_extract_handler
+from worker.match_handler import handle_match
 from worker.registry import HandlerRegistry
 
 structlog.configure(
@@ -165,10 +166,11 @@ def poll_loop(
 
 
 def build_default_registry(storage: Storage) -> HandlerRegistry:
-    """extract is the only handler wired up so far -- match/notify/post are
-    later phases. Real handlers register themselves here as those land."""
+    """extract and match are wired up so far -- notify/post are later
+    phases. Real handlers register themselves here as those land."""
     registry = HandlerRegistry()
     registry.register(JobType.EXTRACT, make_extract_handler(storage))
+    registry.register(JobType.MATCH, handle_match)
     return registry
 
 
