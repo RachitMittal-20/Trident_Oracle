@@ -1,6 +1,23 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
 
-:root {
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Dark theme only -- CLAUDE.md: "Do not build a light theme." There is no
+ * toggle and no `.dark`-vs-`:root` split by design: both selectors below
+ * carry the identical palette. `.dark` stays defined (rather than deleted)
+ * purely so that any shadcn-generated component markup using a `dark:`
+ * Tailwind variant internally still resolves to *our* palette instead of an
+ * unstyled fallback -- app/layout.tsx sets `className="dark"` on <html> to
+ * match. If a future change ever needs a real light theme, this is where
+ * that split would start doing real work; today it's a safety net, not a
+ * feature.
+ */
+:root,
+.dark {
+  /* --- CLAUDE.md palette, verbatim --- */
   --bg-base: #08090b;
   --bg-raised: #101215;
   --bg-overlay: #16191e;
@@ -11,6 +28,48 @@
   --signal-clean: #2ea88a;
   --signal-warn: #d9a343;
   --signal-block: #e5534b;
+
+  /* --- shadcn semantic tokens, mapped onto the palette above --- */
+  --background: var(--bg-base);
+  --foreground: var(--text-primary);
+  --card: var(--bg-raised);
+  --card-foreground: var(--text-primary);
+  --popover: var(--bg-overlay);
+  --popover-foreground: var(--text-primary);
+  /* CLAUDE.md's palette defines exactly one interactive/brand color --
+     primary, accent (shadcn's hover-highlight slot), and the focus ring all
+     point at it, rather than inventing shades the spec never asked for. */
+  --primary: var(--accent);
+  --primary-foreground: var(--text-primary);
+  --secondary: var(--bg-overlay);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--bg-overlay);
+  --muted-foreground: var(--text-muted);
+  --accent-foreground: var(--text-primary);
+  --destructive: var(--signal-block);
+  --destructive-foreground: var(--text-primary);
+  --border: var(--border);
+  --input: var(--border);
+  --ring: var(--accent);
+
+  /* recharts series colors -- reuse the same four brand/signal colors
+     rather than introducing new ones, plus one neutral for a 5th series. */
+  --chart-1: var(--accent);
+  --chart-2: var(--signal-clean);
+  --chart-3: var(--signal-warn);
+  --chart-4: var(--signal-block);
+  --chart-5: var(--text-muted);
+
+  --radius: 0.625rem;
+
+  --sidebar: var(--bg-raised);
+  --sidebar-foreground: var(--text-primary);
+  --sidebar-primary: var(--accent);
+  --sidebar-primary-foreground: var(--text-primary);
+  --sidebar-accent: var(--bg-overlay);
+  --sidebar-accent-foreground: var(--text-primary);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--accent);
 }
 
 @theme inline {
@@ -24,11 +83,69 @@
   --color-signal-clean: var(--signal-clean);
   --color-signal-warn: var(--signal-warn);
   --color-signal-block: var(--signal-block);
+
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-heading: var(--font-geist-sans);
+
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-body {
-  background: var(--bg-base);
-  color: var(--text-primary);
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+
+/* CLAUDE.md: "Monospace ... for all numbers, IDs, currency and deltas --
+   with font-variant-numeric: tabular-nums on anything that animates." Applied
+   globally to .font-mono rather than per-component so no numeric value in
+   the app can drift out of alignment by accident. */
+.font-mono {
+  font-variant-numeric: tabular-nums;
 }
