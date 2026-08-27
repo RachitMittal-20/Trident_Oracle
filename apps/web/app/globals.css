@@ -48,7 +48,6 @@
   --accent-foreground: var(--text-primary);
   --destructive: var(--signal-block);
   --destructive-foreground: var(--text-primary);
-  --border: var(--border);
   --input: var(--border);
   --ring: var(--accent);
 

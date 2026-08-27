@@ -3,16 +3,22 @@ core, and serialize; the actual reads/writes live in api/db.py, not here --
 CLAUDE.md: "Do not put business logic in API route handlers."
 """
 
+import asyncio
+import contextlib
 import hmac
+import json
 import os
 import uuid
-from typing import Annotated, Literal
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Annotated, Any, Literal
 
 import psycopg
 import structlog
 from core.errors import TokenError
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, StreamingResponse
 from notifiers.telegram import TelegramNotifier
 from storage.base import Storage
 
@@ -20,8 +26,10 @@ from api import __version__, approvals, db, webhooks
 from api.config import (
     get_approval_redeemer_connection,
     get_connection,
+    get_database_url,
     get_storage,
 )
+from api.events import EventBroadcaster, listen_for_events
 from api.ingest import DuplicateInvoice, FileTooLarge, UnsupportedFileType, ingest_invoice
 from api.schemas import (
     DeliveryResponse,
@@ -33,11 +41,40 @@ from api.schemas import (
     UploadResponse,
 )
 
-app = FastAPI(title="Trident Oracle API")
-app.include_router(webhooks.router)
 log = structlog.get_logger()
 
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    broadcaster = EventBroadcaster()
+    app.state.broadcaster = broadcaster
+    listener_task = asyncio.create_task(listen_for_events(broadcaster, get_database_url()))
+    try:
+        yield
+    finally:
+        listener_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await listener_task
+
+
+app = FastAPI(title="Trident Oracle API", lifespan=lifespan)
+app.include_router(webhooks.router)
+
+# apps/web's /pipeline screen (a browser origin, e.g. localhost:3000) needs
+# CORS for both its EventSource connection to /v1/events/stream and its
+# upload fetch() to /v1/invoices/upload. WEB_ORIGIN is the one place that
+# choice is configured -- no wildcard, since the SSE stream sends live
+# tenant data.
+_web_origin = os.environ.get("WEB_ORIGIN", "http://localhost:3000")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[_web_origin],
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
+
 SIGNED_URL_EXPIRES_IN_SECONDS = 300
+_SSE_KEEPALIVE_SECONDS = 15.0
 
 
 @app.get("/health")
@@ -151,6 +188,58 @@ def list_deliveries(
         conn, status=status, channel=channel, invoice_id=invoice_id, limit=limit, offset=offset
     )
     return [DeliveryResponse(**row) for row in rows]
+
+
+def _sse_message(event: str, data: Any) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+@app.get("/v1/events/stream")
+async def stream_pipeline_events(
+    request: Request,
+    tenant_id: uuid.UUID,
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+) -> StreamingResponse:
+    # tenant_id as a query param carries the same auth-placeholder caveat as
+    # every other endpoint here (see upload_invoice's docstring) -- RLS is
+    # what actually scopes every query this connection makes, both the
+    # snapshot below and every get_pipeline_card() lookup as events arrive.
+    db.set_tenant(conn, tenant_id)
+    snapshot = db.list_pipeline_invoices(conn)
+
+    broadcaster: EventBroadcaster = request.app.state.broadcaster
+    queue = await broadcaster.subscribe(tenant_id)
+
+    async def event_source() -> AsyncIterator[str]:
+        try:
+            yield _sse_message("snapshot", {"invoices": snapshot})
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(
+                        queue.get(), timeout=_SSE_KEEPALIVE_SECONDS
+                    )
+                except TimeoutError:
+                    # SSE comment line -- ignored by EventSource, keeps
+                    # intermediary proxies/load balancers from idling out
+                    # the connection during a quiet pipeline.
+                    yield ": keep-alive\n\n"
+                    continue
+                card = db.get_pipeline_card(conn, uuid.UUID(event["invoice_id"]))
+                yield _sse_message("invoice_event", {**event, "card": card})
+        finally:
+            await broadcaster.unsubscribe(tenant_id, queue)
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # --- Approval endpoints -----------------------------------------------------

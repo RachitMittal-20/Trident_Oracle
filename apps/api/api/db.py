@@ -15,6 +15,8 @@ from datetime import datetime
 from typing import Any
 
 import psycopg
+from core.models import InvoiceStatus
+from core.pipeline_stage import stage_for_status
 from psycopg.rows import DictRow, dict_row
 from psycopg.types.json import Jsonb
 
@@ -192,3 +194,62 @@ def list_notification_deliveries(
             params,
         )
         return cur.fetchall()
+
+
+_PIPELINE_TERMINAL_STATUSES = ("POSTED", "REJECTED", "AUTO_POSTED")
+
+_PIPELINE_CARD_SELECT = """
+    SELECT i.id AS invoice_id, i.invoice_number, i.total, i.currency, i.status,
+           i.created_at, i.updated_at, v.name AS vendor_name
+    FROM invoices i
+    LEFT JOIN vendors v ON v.id = i.vendor_id
+"""
+
+
+def _pipeline_card(row: DictRow) -> dict[str, Any]:
+    # Money is Decimal end to end -- str(), never float(), so a JSON-encoded
+    # amount can't silently lose precision on the wire (CLAUDE.md: "Money is
+    # Decimal, never float").
+    return {
+        "invoice_id": str(row["invoice_id"]),
+        "invoice_number": row["invoice_number"],
+        "amount": str(row["total"]) if row["total"] is not None else None,
+        "currency": row["currency"],
+        "status": row["status"],
+        "stage": stage_for_status(InvoiceStatus(row["status"])).value,
+        "vendor_name": row["vendor_name"],
+        "created_at": row["created_at"].isoformat(),
+        "updated_at": row["updated_at"].isoformat(),
+    }
+
+
+def list_pipeline_invoices(conn: psycopg.Connection[Any]) -> list[dict[str, Any]]:
+    """Snapshot sent as the first SSE message on every /v1/events/stream
+    connection (including a client's reconnect) -- current occupants of the
+    rail, the PENDING_APPROVAL holding column, and the EXTRACTION_FAILED
+    failures tray, for this request's tenant (set_tenant() must already have
+    been called; RLS does the actual scoping). Excludes AUTO_POSTED, POSTED,
+    and REJECTED: those are terminal, already animated out on every client
+    that was connected live, and a reconnecting client does not need that
+    history replayed."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            _PIPELINE_CARD_SELECT
+            + f" WHERE i.status NOT IN {tuple(_PIPELINE_TERMINAL_STATUSES)!r} ORDER BY i.created_at"  # noqa: S608
+        )
+        rows = cur.fetchall()
+    return [_pipeline_card(row) for row in rows]
+
+
+def get_pipeline_card(
+    conn: psycopg.Connection[Any], invoice_id: uuid.UUID
+) -> dict[str, Any] | None:
+    """Fetches display fields (vendor, amount, invoice number) for one
+    invoice at live-event-delivery time. Called from the SSE endpoint's own
+    per-request, already-tenant-scoped connection -- not from the shared
+    LISTEN bridge -- so RLS applies exactly as it does to every other query
+    in this module; nothing here needs a BYPASSRLS role."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(_PIPELINE_CARD_SELECT + " WHERE i.id = %s", (invoice_id,))
+        row = cur.fetchone()
+    return _pipeline_card(row) if row is not None else None

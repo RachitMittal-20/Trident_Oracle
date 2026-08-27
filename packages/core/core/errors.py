@@ -61,3 +61,16 @@ class StorageError(TridentOracleError):
 class NotificationError(TridentOracleError):
     """A notification backend (Telegram, email, WhatsApp) failed to send a
     message."""
+
+
+class UnmappedPipelineStage(TridentOracleError):
+    """An InvoiceStatus has no entry in pipeline_stage.py's stage table.
+
+    This must never happen in production -- test_pipeline_stage.py asserts
+    every InvoiceStatus member maps to a PipelineStage, so this only fires
+    if that invariant is ever broken (e.g. a new status added to the enum
+    without a corresponding stage). Raising here rather than letting a
+    dict lookup KeyError through is deliberate: apps/api/api/events.py's
+    SSE bridge is the caller, and a clear, named exception at the one
+    place this can go wrong is far easier to diagnose than a bare KeyError
+    surfacing three layers away."""
