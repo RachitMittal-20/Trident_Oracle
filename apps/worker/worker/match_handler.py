@@ -252,6 +252,64 @@ def _persist_match_run(
     return uuid.UUID(str(row["id"]))
 
 
+def _persist_line_matches(
+    conn: psycopg.Connection[Any], match_result: ThreeWayMatchResult
+) -> None:
+    """Writes core.matching.line_matcher's per-line results back onto
+    invoice_lines -- matched_po_line_id, match_method, and match_confidence
+    all exist as columns there specifically to hold this, but until now
+    nothing ever wrote them: the engine computed
+    ThreeWayMatchResult.line_matches and it went unused past this
+    function's return. The /invoices/[id]/match screen (apps/api/api/
+    match_view.py) is what surfaced the gap -- it reads these columns
+    directly rather than recomputing the match, so they have to be real."""
+    if match_result.line_matches is None:
+        return
+    with conn.cursor() as cur:
+        for line_match in match_result.line_matches.matches:
+            cur.execute(
+                """
+                UPDATE invoice_lines
+                SET matched_po_line_id = %(po_line_id)s, match_method = %(match_method)s,
+                    match_confidence = %(confidence)s
+                WHERE id = %(invoice_line_id)s
+                """,
+                {
+                    "po_line_id": line_match.po_line_id,
+                    "match_method": line_match.match_method.value,
+                    "confidence": line_match.confidence,
+                    "invoice_line_id": line_match.invoice_line_id,
+                },
+            )
+        if match_result.line_matches.unmatched_invoice_line_ids:
+            cur.execute(
+                """
+                UPDATE invoice_lines
+                SET matched_po_line_id = NULL, match_method = %(match_method)s,
+                    match_confidence = NULL
+                WHERE id = ANY(%(invoice_line_ids)s)
+                """,
+                {
+                    "match_method": MatchMethod.UNMATCHED.value,
+                    "invoice_line_ids": list(match_result.line_matches.unmatched_invoice_line_ids),
+                },
+            )
+    conn.commit()
+
+
+def _persist_decision_reason(
+    conn: psycopg.Connection[Any], match_run_id: uuid.UUID, reason: str
+) -> None:
+    """Set after decide() runs -- match_runs is persisted before the
+    decision exists (match_exceptions needs match_run_id as an FK first),
+    so this is a follow-up UPDATE rather than part of the original INSERT."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE match_runs SET reason = %s WHERE id = %s", (reason, match_run_id)
+        )
+    conn.commit()
+
+
 def _persist_match_exceptions(
     conn: psycopg.Connection[Any],
     tenant_id: uuid.UUID,
@@ -576,11 +634,13 @@ def handle_match(conn: psycopg.Connection[Any], queue: JobQueue, job: Job) -> No
     match_run_id = _persist_match_run(
         conn, tenant_id, invoice_id, policy.version, match_result, duration_ms
     )
+    _persist_line_matches(conn, match_result)
     exception_ids = _persist_match_exceptions(
         conn, tenant_id, match_run_id, invoice_id, match_result.findings
     )
 
     decision = decide(match_result, invoice.overall_confidence, invoice, policy)
+    _persist_decision_reason(conn, match_run_id, decision.reason)
     _apply_decision(conn, queue, invoice_id, tenant_id, decision, match_result, exception_ids)
 
     log.info(

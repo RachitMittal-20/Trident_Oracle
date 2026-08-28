@@ -130,3 +130,82 @@ class FieldCorrectionResponse(BaseModel):
 class RerunMatchResponse(BaseModel):
     job_id: uuid.UUID
     status: str = "MATCHING"
+
+
+class MatchViewInvoice(BaseModel):
+    id: str
+    invoice_number: str | None
+    total: str | None
+    currency: str
+    status: str
+
+
+class MatchViewPO(BaseModel):
+    id: str
+    po_number: str
+    total: str | None
+
+
+class MatchViewPOLine(BaseModel):
+    id: str
+    line_no: int
+    sku: str | None
+    description: str
+    qty_ordered: str | None
+    qty_received: str | None
+    unit_price: str | None
+    line_total: str | None
+
+
+class MatchViewInvoiceLine(BaseModel):
+    id: str
+    line_no: int
+    description: str
+    qty: str | None
+    unit_price: str | None
+    line_total: str | None
+    matched_po_line_id: str | None
+    match_method: str | None
+    match_confidence: str | None
+
+
+class MatchViewException(BaseModel):
+    id: str
+    exception_type: str
+    severity: str
+    detail: str
+    po_line_id: str | None
+    invoice_line_id: str | None
+    expected_value: str | None
+    actual_value: str | None
+    delta: str | None
+    delta_pct: str | None
+    status: str
+
+
+class MatchViewRun(BaseModel):
+    id: str
+    result: str
+    reason: str | None
+    policy_version: int
+    executed_at: str
+
+
+class MatchViewResponse(BaseModel):
+    invoice: MatchViewInvoice
+    po: MatchViewPO | None
+    po_lines: list[MatchViewPOLine]
+    invoice_lines: list[MatchViewInvoiceLine]
+    exceptions: list[MatchViewException]
+    match_run: MatchViewRun | None
+
+
+class DecideRequest(BaseModel):
+    decision: str
+    actor_user_id: uuid.UUID
+
+
+class DecideResponse(BaseModel):
+    status: str
+    approvals_received: int
+    approvals_required: int

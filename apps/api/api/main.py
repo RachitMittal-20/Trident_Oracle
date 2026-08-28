@@ -22,7 +22,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from notifiers.telegram import TelegramNotifier
 from storage.base import Storage
 
-from api import __version__, approvals, db, verification, webhooks
+from api import __version__, approvals, db, match_view, verification, webhooks
 from api.config import (
     get_approval_redeemer_connection,
     get_connection,
@@ -32,6 +32,8 @@ from api.config import (
 from api.events import EventBroadcaster, listen_for_events
 from api.ingest import DuplicateInvoice, FileTooLarge, UnsupportedFileType, ingest_invoice
 from api.schemas import (
+    DecideRequest,
+    DecideResponse,
     DeliveryResponse,
     DuplicateInvoiceDetail,
     FieldConfidenceResponse,
@@ -39,6 +41,7 @@ from api.schemas import (
     FieldCorrectionResponse,
     InvoiceLineResponse,
     InvoiceResponse,
+    MatchViewResponse,
     RerunMatchResponse,
     TelegramUpdate,
     UploadResponse,
@@ -209,6 +212,50 @@ def rerun_invoice_match(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     conn.commit()
     return RerunMatchResponse(job_id=job_id)
+
+
+@app.get("/v1/invoices/{invoice_id}/match", response_model=MatchViewResponse)
+def get_invoice_match_view(
+    invoice_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+) -> MatchViewResponse:
+    db.set_tenant(conn, tenant_id)
+    try:
+        view = match_view.get_match_view(conn, invoice_id)
+    except match_view.InvoiceNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return MatchViewResponse(**view)
+
+
+@app.post("/v1/invoices/{invoice_id}/decide", response_model=DecideResponse)
+def decide_invoice_match(
+    invoice_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    body: DecideRequest,
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+) -> DecideResponse:
+    db.set_tenant(conn, tenant_id)
+    if body.decision not in ("approved", "rejected"):
+        raise HTTPException(status_code=422, detail="decision must be 'approved' or 'rejected'")
+    try:
+        result = match_view.decide_invoice(
+            conn, tenant_id, invoice_id, body.decision, body.actor_user_id
+        )
+    except match_view.NotAuthorizedToDecide as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except match_view.NoPendingApprovalForActor as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except match_view.InvoiceNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except InvalidStateTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    conn.commit()
+    return DecideResponse(
+        status=result.status,
+        approvals_received=result.approvals_received,
+        approvals_required=result.approvals_required,
+    )
 
 
 @app.get("/v1/deliveries", response_model=list[DeliveryResponse])
