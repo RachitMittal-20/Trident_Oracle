@@ -12,6 +12,7 @@ naturally RLS-scoped rather than needing cross-tenant visibility.
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 import psycopg
@@ -114,18 +115,20 @@ def insert_audit_log(
     entity_id: uuid.UUID,
     before: dict[str, Any] | None = None,
     after: dict[str, Any] | None = None,
+    actor_id: str | None = None,
 ) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO audit_log
-                (tenant_id, actor_type, action, entity_type, entity_id, before, after)
-            VALUES (%(tenant_id)s, %(actor_type)s, %(action)s, %(entity_type)s,
+                (tenant_id, actor_type, actor_id, action, entity_type, entity_id, before, after)
+            VALUES (%(tenant_id)s, %(actor_type)s, %(actor_id)s, %(action)s, %(entity_type)s,
                     %(entity_id)s, %(before)s, %(after)s)
             """,
             {
                 "tenant_id": tenant_id,
                 "actor_type": actor_type,
+                "actor_id": actor_id,
                 "action": action,
                 "entity_type": entity_type,
                 "entity_id": entity_id,
@@ -139,6 +142,31 @@ def get_invoice(conn: psycopg.Connection[Any], invoice_id: uuid.UUID) -> DictRow
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute("SELECT * FROM invoices WHERE id = %s", (invoice_id,))
         return cur.fetchone()
+
+
+def get_active_policy_min_confidence(
+    conn: psycopg.Connection[Any], tenant_id: uuid.UUID
+) -> Decimal | None:
+    """The active tolerance_policies row's min_field_confidence, for the
+    verification screen's below-threshold styling and count -- None if
+    this tenant has no active policy (mirrors apps/worker/worker/
+    match_handler.py's own "no active tolerance policy" lookup, but read
+    -only and non-raising: a missing policy here just means the frontend
+    can't color-code confidence yet, not a failed match run)."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """
+            SELECT rules ->> 'min_field_confidence' AS min_field_confidence
+            FROM tolerance_policies
+            WHERE tenant_id = %s AND is_active = true
+            ORDER BY version DESC LIMIT 1
+            """,
+            (tenant_id,),
+        )
+        row = cur.fetchone()
+    if row is None or row["min_field_confidence"] is None:
+        return None
+    return Decimal(row["min_field_confidence"])
 
 
 def get_invoice_lines(conn: psycopg.Connection[Any], invoice_id: uuid.UUID) -> list[DictRow]:

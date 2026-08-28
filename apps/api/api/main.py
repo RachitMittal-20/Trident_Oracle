@@ -15,14 +15,14 @@ from typing import Annotated, Any, Literal
 
 import psycopg
 import structlog
-from core.errors import TokenError
+from core.errors import InvalidStateTransition, TokenError
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from notifiers.telegram import TelegramNotifier
 from storage.base import Storage
 
-from api import __version__, approvals, db, webhooks
+from api import __version__, approvals, db, verification, webhooks
 from api.config import (
     get_approval_redeemer_connection,
     get_connection,
@@ -35,8 +35,11 @@ from api.schemas import (
     DeliveryResponse,
     DuplicateInvoiceDetail,
     FieldConfidenceResponse,
+    FieldCorrectionRequest,
+    FieldCorrectionResponse,
     InvoiceLineResponse,
     InvoiceResponse,
+    RerunMatchResponse,
     TelegramUpdate,
     UploadResponse,
 )
@@ -69,7 +72,7 @@ _web_origin = os.environ.get("WEB_ORIGIN", "http://localhost:3000")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[_web_origin],
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PATCH"],
     allow_headers=["*"],
 )
 
@@ -145,6 +148,7 @@ def get_invoice(
 
     lines = db.get_invoice_lines(conn, invoice_id)
     confidences = db.get_field_confidences(conn, invoice_id)
+    policy_min_field_confidence = db.get_active_policy_min_confidence(conn, tenant_id)
     # Generated per request -- never a public/cached path.
     file_url = storage.signed_url(invoice["source_file_path"], SIGNED_URL_EXPIRES_IN_SECONDS)
 
@@ -164,9 +168,47 @@ def get_invoice(
         file_url=file_url,
         lines=[InvoiceLineResponse(**line) for line in lines],
         field_confidences=[FieldConfidenceResponse(**c) for c in confidences],
+        policy_min_field_confidence=policy_min_field_confidence,
         created_at=invoice["created_at"],
         updated_at=invoice["updated_at"],
     )
+
+
+@app.patch("/v1/invoices/{invoice_id}/fields", response_model=FieldCorrectionResponse)
+def correct_invoice_field(
+    invoice_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    body: FieldCorrectionRequest,
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+) -> FieldCorrectionResponse:
+    db.set_tenant(conn, tenant_id)
+    try:
+        result = verification.correct_field(
+            conn, tenant_id, invoice_id, body.field_path, body.value, actor_id=None
+        )
+    except verification.InvalidFieldPath as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except verification.FieldNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    conn.commit()
+    return FieldCorrectionResponse(**result)
+
+
+@app.post("/v1/invoices/{invoice_id}/rerun-match", response_model=RerunMatchResponse)
+def rerun_invoice_match(
+    invoice_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+) -> RerunMatchResponse:
+    db.set_tenant(conn, tenant_id)
+    try:
+        job_id = verification.rerun_match(conn, tenant_id, invoice_id, actor_id=None)
+    except verification.FieldNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except InvalidStateTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    conn.commit()
+    return RerunMatchResponse(job_id=job_id)
 
 
 @app.get("/v1/deliveries", response_model=list[DeliveryResponse])

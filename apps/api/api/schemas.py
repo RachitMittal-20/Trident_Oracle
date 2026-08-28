@@ -69,6 +69,7 @@ class FieldConfidenceResponse(BaseModel):
     confidence: Decimal
     bbox: dict[str, Any] | None
     raw_text: str | None
+    human_corrected: bool
 
 
 class TelegramChat(BaseModel):
@@ -111,5 +112,21 @@ class InvoiceResponse(BaseModel):
     file_url: str
     lines: list[InvoiceLineResponse]
     field_confidences: list[FieldConfidenceResponse]
+    policy_min_field_confidence: Decimal | None
     created_at: datetime
     updated_at: datetime
+
+
+class FieldCorrectionRequest(BaseModel):
+    field_path: str
+    value: str
+
+
+class FieldCorrectionResponse(BaseModel):
+    field_path: str
+    value: str
+
+
+class RerunMatchResponse(BaseModel):
+    job_id: uuid.UUID
+    status: str = "MATCHING"

@@ -32,6 +32,16 @@ const CURRENCY_SYMBOLS: Record<string, string> = {
   INR: "₹",
 };
 
+/** Same formatting MoneyValue renders, as a plain string -- for the rare
+ * caller (components/verify/editable-value.tsx's count-up animation) that
+ * has to write formatted currency text into a DOM node imperatively via
+ * animejs rather than through React's own render. */
+export function formatMoneyPlain(amount: string, currency = "USD"): string {
+  const { sign, integer, fraction } = formatDecimalString(amount);
+  const symbol = CURRENCY_SYMBOLS[currency] ?? `${currency} `;
+  return `${sign}${symbol}${integer}.${fraction}`;
+}
+
 export function MoneyValue({ amount, currency = "USD", className }: MoneyValueProps) {
   const { sign, integer, fraction } = formatDecimalString(amount);
   const symbol = CURRENCY_SYMBOLS[currency] ?? `${currency} `;
