@@ -209,3 +209,62 @@ class DecideResponse(BaseModel):
     status: str
     approvals_received: int
     approvals_required: int
+
+
+class ExceptionCardResponse(BaseModel):
+    id: str
+    exception_type: str
+    severity: str
+    detail: str
+    status: str
+    created_at: str
+    invoice_id: str
+    invoice_number: str | None
+    invoice_total: str | None
+    currency: str
+    vendor_id: str | None
+    vendor_name: str | None
+    expected_value: str | None
+    actual_value: str | None
+    delta: str | None
+    delta_pct: str | None
+
+
+class VendorOption(BaseModel):
+    id: str
+    name: str
+
+
+class ExceptionsListResponse(BaseModel):
+    exceptions: list[ExceptionCardResponse]
+    auto_posted_this_week: int
+    vendors: list[VendorOption]
+
+
+class ResolveExceptionRequest(BaseModel):
+    actor_user_id: uuid.UUID
+    note: str | None = None
+
+
+class ResolveExceptionResponse(BaseModel):
+    status: str = "resolved"
+
+
+class InvoiceListItem(BaseModel):
+    id: str
+    invoice_number: str | None
+    invoice_date: str | None
+    currency: str
+    total: str | None
+    status: str
+    created_at: str
+    vendor_id: str | None
+    vendor_name: str | None
+
+
+class InvoiceListResponse(BaseModel):
+    items: list[InvoiceListItem]
+    total: int
+    page: int
+    page_size: int
+    status_counts: dict[str, int]

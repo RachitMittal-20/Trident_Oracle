@@ -11,6 +11,7 @@ import os
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import date
 from typing import Annotated, Any, Literal
 
 import psycopg
@@ -22,7 +23,16 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from notifiers.telegram import TelegramNotifier
 from storage.base import Storage
 
-from api import __version__, approvals, db, match_view, verification, webhooks
+from api import (
+    __version__,
+    approvals,
+    db,
+    exceptions_view,
+    invoices_list,
+    match_view,
+    verification,
+    webhooks,
+)
 from api.config import (
     get_approval_redeemer_connection,
     get_connection,
@@ -36,13 +46,17 @@ from api.schemas import (
     DecideResponse,
     DeliveryResponse,
     DuplicateInvoiceDetail,
+    ExceptionsListResponse,
     FieldConfidenceResponse,
     FieldCorrectionRequest,
     FieldCorrectionResponse,
     InvoiceLineResponse,
+    InvoiceListResponse,
     InvoiceResponse,
     MatchViewResponse,
     RerunMatchResponse,
+    ResolveExceptionRequest,
+    ResolveExceptionResponse,
     TelegramUpdate,
     UploadResponse,
 )
@@ -256,6 +270,71 @@ def decide_invoice_match(
         approvals_received=result.approvals_received,
         approvals_required=result.approvals_required,
     )
+
+
+@app.get("/v1/exceptions", response_model=ExceptionsListResponse)
+def get_exceptions(
+    tenant_id: uuid.UUID,
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    status: str = "open",
+    severity: Literal["info", "warn", "block"] | None = None,
+    exception_type: str | None = None,
+    vendor_id: uuid.UUID | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    sort: Literal["severity", "age", "amount"] = "age",
+    order: Literal["asc", "desc"] = "desc",
+) -> ExceptionsListResponse:
+    db.set_tenant(conn, tenant_id)
+    result = exceptions_view.list_exceptions(
+        conn,
+        status=status,
+        severity=severity,
+        exception_type=exception_type,
+        vendor_id=vendor_id,
+        date_from=date.fromisoformat(date_from) if date_from else None,
+        date_to=date.fromisoformat(date_to) if date_to else None,
+        sort=sort,
+        order=order,
+    )
+    return ExceptionsListResponse(**result)
+
+
+@app.post("/v1/exceptions/{exception_id}/resolve", response_model=ResolveExceptionResponse)
+def resolve_exception(
+    exception_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    body: ResolveExceptionRequest,
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+) -> ResolveExceptionResponse:
+    db.set_tenant(conn, tenant_id)
+    try:
+        exceptions_view.resolve_exception(
+            conn, tenant_id, exception_id, body.actor_user_id, body.note
+        )
+    except exceptions_view.ExceptionNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except exceptions_view.ExceptionAlreadySettled as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    conn.commit()
+    return ResolveExceptionResponse()
+
+
+@app.get("/v1/invoices", response_model=InvoiceListResponse)
+def get_invoices(
+    tenant_id: uuid.UUID,
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    status: str | None = None,
+    sort: Literal["invoice_date", "total", "status", "created_at", "invoice_number"] = "created_at",
+    order: Literal["asc", "desc"] = "desc",
+    page: int = 1,
+    page_size: int = 25,
+) -> InvoiceListResponse:
+    db.set_tenant(conn, tenant_id)
+    result = invoices_list.list_invoices(
+        conn, status=status, sort=sort, order=order, page=page, page_size=page_size
+    )
+    return InvoiceListResponse(**result)
 
 
 @app.get("/v1/deliveries", response_model=list[DeliveryResponse])

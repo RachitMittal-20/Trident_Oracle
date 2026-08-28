@@ -19,12 +19,12 @@ export type InvoiceStatus =
   | "REJECTED"
   | "POSTED";
 
-type StatusTone = "clean" | "warn" | "block" | "neutral";
+export type StatusTone = "clean" | "warn" | "block" | "neutral";
 
 /** Statuses mid-pipeline get the subtle pulse; everything else holds still. */
 const TRANSITIONAL_STATUSES = new Set<InvoiceStatus>(["EXTRACTING", "MATCHING"]);
 
-const STATUS_CONFIG: Record<InvoiceStatus, { label: string; tone: StatusTone }> = {
+export const STATUS_CONFIG: Record<InvoiceStatus, { label: string; tone: StatusTone }> = {
   RECEIVED: { label: "Received", tone: "neutral" },
   EXTRACTING: { label: "Extracting", tone: "neutral" },
   EXTRACTION_FAILED: { label: "Extraction Failed", tone: "block" },
@@ -45,6 +45,13 @@ const TONE_CLASSES: Record<StatusTone, string> = {
   warn: "bg-signal-warn/10 text-signal-warn",
   block: "bg-signal-block/10 text-signal-block",
   neutral: "bg-text-muted/10 text-text-muted",
+};
+
+export const SOLID_TONE_CLASSES: Record<StatusTone, string> = {
+  clean: "bg-signal-clean",
+  warn: "bg-signal-warn",
+  block: "bg-signal-block",
+  neutral: "bg-text-muted",
 };
 
 const DOT_TONE_CLASSES: Record<StatusTone, string> = {
