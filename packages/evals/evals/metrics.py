@@ -147,6 +147,9 @@ class EvalMetrics:
     calibration: tuple[CalibrationBucket, ...]
     line_items: LineItemMetrics
     mean_latency_ms: float | None
+    latency_p50_ms: float | None
+    latency_p95_ms: float | None
+    latency_p99_ms: float | None
     total_estimated_cost_usd: float
 
 
@@ -285,8 +288,51 @@ def compute_metrics(
         calibration=_bucket_calibration(calibration_pairs),
         line_items=line_items_metrics,
         mean_latency_ms=(sum(latencies) / len(latencies)) if latencies else None,
+        latency_p50_ms=_percentile(latencies, 0.50),
+        latency_p95_ms=_percentile(latencies, 0.95),
+        latency_p99_ms=_percentile(latencies, 0.99),
         total_estimated_cost_usd=total_cost,
     )
+
+
+def _percentile(values: list[int], p: float) -> float | None:
+    """Linear-interpolation percentile -- the same method Postgres's
+    percentile_cont uses (apps/api/api/analytics_view.py's pipeline latency
+    percentiles), so a "p95" here means the same thing there."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return float(ordered[0])
+    rank = p * (len(ordered) - 1)
+    low_index = int(rank)
+    high_index = min(low_index + 1, len(ordered) - 1)
+    fraction = rank - low_index
+    return ordered[low_index] + (ordered[high_index] - ordered[low_index]) * fraction
+
+
+def count_header_mismatches(gt: GroundTruthDocument, prediction: ExtractionResult) -> int:
+    """How many header fields disagree after normalization -- the failure
+    gallery's ranking key (evals/storage.py persists this per document, the
+    /benchmarks route sorts by it descending). Fields absent from ground
+    truth are skipped: there's nothing to "mismatch" for a field the
+    dataset never labeled in the first place (see each loader's own gaps,
+    e.g. SROIE has no due_date at all)."""
+    mismatches = 0
+    for name in HEADER_FIELDS:
+        gt_raw = getattr(gt.header, name)
+        pred_raw = getattr(prediction.header, name)
+        if not (gt_raw and gt_raw.strip()):
+            continue
+        if not (pred_raw and pred_raw.strip()):
+            mismatches += 1
+            continue
+        try:
+            if _normalize_header_value(name, gt_raw) != _normalize_header_value(name, pred_raw):
+                mismatches += 1
+        except _NormalizeFailed:
+            mismatches += 1
+    return mismatches
 
 
 def _accumulate_field(

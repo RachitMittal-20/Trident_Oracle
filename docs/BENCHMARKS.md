@@ -23,3 +23,50 @@ against synthetic fixtures. The sections below start accumulating the
 moment a real `run`/`compare` invocation happens.
 
 ---
+
+## Live demo run: sroie / mock (eval_runs.id = d9a5aee7-0f56-42c2-ac96-c38d00a959b7)
+
+Populates `/benchmarks` with real, harness-computed numbers so the route
+has something to render -- backend is the fixture-backed `mock` extractor
+(extractors/mock.py), not Gemini or Tesseract, and the dataset is a
+**hand-built 4-document fixture in SROIE's format, not the actual public
+SROIE release** (no copy of the real dataset was available while wiring
+this up). Both facts are recorded here so nobody mistakes this for a real
+accuracy measurement of anything -- it's a mechanics demo.
+
+Reproduce the fixture (SROIE's layout: `img/{id}.jpg` + `entities/{id}.txt`,
+see `evals/datasets/sroie.py`):
+
+```bash
+mkdir -p /tmp/sroie-demo/img /tmp/sroie-demo/entities
+
+cat > /tmp/sroie-demo/entities/receipt-1.txt <<'EOF'
+{"company": "Acme Supply Co.", "date": "2026-08-12", "address": "1 Test St", "total": "450.47"}
+EOF
+cat > /tmp/sroie-demo/entities/receipt-2.txt <<'EOF'
+{"company": "Globex Manufacturing", "date": "2026-08-01", "address": "2 Test Ave", "total": "12.00"}
+EOF
+cat > /tmp/sroie-demo/entities/receipt-3.txt <<'EOF'
+{"company": "Totally Different Co.", "date": "2026-07-20", "address": "3 Test Blvd", "total": "9999.99"}
+EOF
+cat > /tmp/sroie-demo/entities/receipt-4.txt <<'EOF'
+{"company": "Fourth Vendor LLC", "date": "2026-06-15", "address": "4 Test Rd", "total": "88.00"}
+EOF
+for i in 1 2 3 4; do printf "\xff\xd8\xff\xe0fakejpegdata$i" > /tmp/sroie-demo/img/receipt-$i.jpg; done
+```
+
+Then, with `DATABASE_URL` pointed at a connection that can actually write
+`eval_runs`/`eval_results`/etc. (app_role can only SELECT them -- see
+`db/migrations/0028_benchmarks_read_access.sql` -- so this needs the
+project's service-role/direct Postgres connection, not the one
+`apps/api`/`apps/worker` use) and `SUPABASE_URL`/`SUPABASE_SERVICE_KEY`/
+`SUPABASE_STORAGE_BUCKET` set for the thumbnail upload:
+
+```bash
+SROIE_ROOT=/tmp/sroie-demo python -m evals run --backend mock --dataset sroie --n 4
+```
+
+This reruns the exact same fixture through the exact same code path that
+produced the live row -- it will not reproduce the identical `eval_runs.id`
+(a fresh UUID every run), but every number should match, since the mock
+backend and the fixture above are both fully deterministic.

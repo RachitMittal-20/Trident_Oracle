@@ -332,3 +332,64 @@ class DeliveryHealthResponse(BaseModel):
     mean_attempts: str
     max_attempts: int
     dead_letter_count: int
+
+
+class EvalRunSummary(BaseModel):
+    id: str
+    dataset: str
+    backend: str
+    model_version: str | None
+    sample_count: int
+    started_at: str
+    finished_at: str | None
+
+
+class EvalFieldMetrics(BaseModel):
+    field_path: str
+    n: int
+    precision: str | None
+    recall: str | None
+    f1: str | None
+    exact_match_rate: str | None
+    mean_confidence: str | None
+    mean_absolute_error: str | None
+    within_tolerance_rate: str | None
+
+
+class EvalCalibrationBucket(BaseModel):
+    bucket_low: float
+    bucket_high: float
+    n: int
+    mean_confidence: str | None
+    actual_accuracy: str | None
+
+
+class EvalRunDetail(BaseModel):
+    id: str
+    dataset: str
+    backend: str
+    model_version: str | None
+    sample_count: int
+    started_at: str
+    finished_at: str | None
+    overall_exact_match_rate: float | None
+    mean_latency_ms: str | None
+    latency_p50_ms: str | None
+    latency_p95_ms: str | None
+    latency_p99_ms: str | None
+    total_estimated_cost_usd: str | None
+    cost_per_1000_usd: float | None
+    line_item_precision: str | None
+    line_item_recall: str | None
+    line_item_f1: str | None
+    fields: list[EvalFieldMetrics]
+    calibration: list[EvalCalibrationBucket]
+
+
+class EvalFailureDocument(BaseModel):
+    doc_id: str
+    ground_truth: dict[str, Any]
+    extraction_result: dict[str, Any]
+    mismatch_count: int
+    thumbnail_url: str | None
+    mime_type: str | None

@@ -519,6 +519,7 @@ dependencies = [
     { name = "core" },
     { name = "extractors" },
     { name = "psycopg", extra = ["binary"] },
+    { name = "storage" },
     { name = "structlog" },
 ]
 
@@ -527,6 +528,7 @@ requires-dist = [
     { name = "core", editable = "packages/core" },
     { name = "extractors", editable = "packages/extractors" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
+    { name = "storage", editable = "packages/storage" },
     { name = "structlog", specifier = ">=24.4" },
 ]
 

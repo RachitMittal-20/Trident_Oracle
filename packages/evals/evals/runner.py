@@ -53,6 +53,12 @@ class RunResult:
     finished_at: datetime
     pairs: list[tuple[GroundTruthDocument, ExtractionResult]] = field(default_factory=list)
     failures: list[RunFailure] = field(default_factory=list)
+    # Keyed by doc_id, for the one caller (evals/storage.py's failure-gallery
+    # thumbnail upload) that needs the original bytes a pair's ground truth
+    # doesn't carry. Not persisted itself -- checkpoint.py already
+    # deliberately doesn't durably store raw document bytes (see its own
+    # module docstring), so this only exists for the lifetime of one process.
+    documents: dict[str, DatasetExample] = field(default_factory=dict)
 
 
 def _extract_one(extractor: Extractor, example: DatasetExample) -> ExtractionResult:
@@ -185,4 +191,5 @@ def run(
         finished_at=finished_at,
         pairs=pairs,
         failures=failures,
+        documents={example.doc_id: example for example in examples},
     )

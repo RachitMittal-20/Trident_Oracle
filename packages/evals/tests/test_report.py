@@ -35,6 +35,9 @@ def _sample_metrics() -> EvalMetrics:
             n_matched=1,
         ),
         mean_latency_ms=10.0,
+        latency_p50_ms=9.0,
+        latency_p95_ms=12.0,
+        latency_p99_ms=13.0,
         total_estimated_cost_usd=0.001,
     )
 

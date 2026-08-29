@@ -35,7 +35,9 @@ def format_run_report(run_result: RunResult, metrics: EvalMetrics) -> str:
         f"- Model version: `{run_result.model_version or 'n/a'}`",
         f"- Requested: {run_result.sample_count} · Succeeded: {len(run_result.pairs)} · "
         f"Failed: {len(run_result.failures)}",
-        f"- Mean latency: {_num(metrics.mean_latency_ms, 1)} ms · "
+        f"- Mean latency: {_num(metrics.mean_latency_ms, 1)} ms "
+        f"(p50 {_num(metrics.latency_p50_ms, 1)} · p95 {_num(metrics.latency_p95_ms, 1)} · "
+        f"p99 {_num(metrics.latency_p99_ms, 1)}) · "
         f"Estimated cost: ${metrics.total_estimated_cost_usd:.4f}",
         "",
         "### Per-field metrics",

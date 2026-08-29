@@ -12,6 +12,8 @@ from pathlib import Path
 
 import psycopg
 import structlog
+from storage.base import Storage
+from storage.supabase_storage import SupabaseStorage
 
 from evals.compare import compare
 from evals.datasets import FALLBACK_ORDER, get_dataset_loader
@@ -49,6 +51,25 @@ def _require_database_url() -> str | None:
         )
         return None
     return database_url
+
+
+def _build_storage() -> Storage | None:
+    """None (not an error) if Storage isn't configured -- a run's metrics
+    are still fully valid without a failure gallery; thumbnails are the one
+    optional extra, per evals/storage.py's own per-document upload being
+    best-effort. Same three env vars apps/api/api/config.py::get_storage
+    reads, so one Supabase project setup covers both."""
+    base_url = os.environ.get("SUPABASE_URL")
+    service_key = os.environ.get("SUPABASE_SERVICE_KEY")
+    if not base_url or not service_key:
+        print(
+            "warning: SUPABASE_URL/SUPABASE_SERVICE_KEY not set -- this run will persist "
+            "metrics but the failure gallery will have no document thumbnails",
+            file=sys.stderr,
+        )
+        return None
+    bucket = os.environ.get("SUPABASE_STORAGE_BUCKET", "invoices")
+    return SupabaseStorage(base_url, service_key, bucket)
 
 
 def _dataset_not_found_hint(dataset: str) -> str:
@@ -107,9 +128,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
         concurrency=args.concurrency, checkpoint_path=checkpoint_path,
     )
     metrics = compute_metrics(args.dataset, args.backend, result.pairs)
+    storage = _build_storage()
 
     with psycopg.connect(database_url) as conn:
-        eval_run_id = persist_run(conn, result, metrics)
+        eval_run_id = persist_run(conn, result, metrics, storage=storage)
 
     report = format_run_report(result, metrics)
     append_to_benchmarks_md(args.benchmarks_md, report)
@@ -152,9 +174,10 @@ def _cmd_compare(args: argparse.Namespace) -> int:
         concurrency=args.concurrency, checkpoint_dir=checkpoint_dir,
     )
 
+    storage = _build_storage()
     with psycopg.connect(database_url) as conn:
-        persist_run(conn, result.run_a, result.metrics_a)
-        persist_run(conn, result.run_b, result.metrics_b)
+        persist_run(conn, result.run_a, result.metrics_a, storage=storage)
+        persist_run(conn, result.run_b, result.metrics_b, storage=storage)
 
     report = format_compare_report(result)
     append_to_benchmarks_md(args.benchmarks_md, report)

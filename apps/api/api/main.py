@@ -27,6 +27,7 @@ from api import (
     __version__,
     analytics_view,
     approvals,
+    benchmarks_view,
     db,
     exceptions_view,
     invoices_list,
@@ -51,6 +52,9 @@ from api.schemas import (
     DeliveryHealthResponse,
     DeliveryResponse,
     DuplicateInvoiceDetail,
+    EvalFailureDocument,
+    EvalRunDetail,
+    EvalRunSummary,
     ExceptionsListResponse,
     ExceptionTypeCount,
     FieldConfidenceResponse,
@@ -425,6 +429,58 @@ def get_analytics_delivery_health(
 ) -> DeliveryHealthResponse:
     db.set_tenant(conn, tenant_id)
     return DeliveryHealthResponse(**analytics_view.get_delivery_health(conn))
+
+
+# --- Benchmarks (packages/evals) -------------------------------------------
+# Not tenant-scoped (eval_runs/eval_results/eval_run_calibration/
+# eval_run_documents -- db/migrations/0009_evals.sql's own comment): no
+# tenant_id parameter and no db.set_tenant() call, unlike every endpoint
+# above. app_role's SELECT grant on these four tables (0028_benchmarks_
+# read_access.sql) is what makes this connection able to read them at all.
+
+
+@app.get("/v1/benchmarks/runs", response_model=list[EvalRunSummary])
+def list_eval_runs(
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+) -> list[EvalRunSummary]:
+    return [EvalRunSummary(**row) for row in benchmarks_view.list_runs(conn)]
+
+
+@app.get("/v1/benchmarks/runs/{run_id}", response_model=EvalRunDetail)
+def get_eval_run(
+    run_id: uuid.UUID,
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+) -> EvalRunDetail:
+    detail = benchmarks_view.get_run(conn, run_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail=f"eval run {run_id} not found")
+    return EvalRunDetail(**detail)
+
+
+@app.get("/v1/benchmarks/runs/{run_id}/failures", response_model=list[EvalFailureDocument])
+def get_eval_run_failures(
+    run_id: uuid.UUID,
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    storage: Annotated[Storage, Depends(get_storage)],
+    limit: int = 12,
+) -> list[EvalFailureDocument]:
+    documents = benchmarks_view.get_failures(conn, run_id, limit=limit)
+    results = []
+    for doc in documents:
+        thumbnail_url = None
+        if doc["thumbnail_path"]:
+            thumbnail_url = storage.signed_url(doc["thumbnail_path"], SIGNED_URL_EXPIRES_IN_SECONDS)
+        results.append(
+            EvalFailureDocument(
+                doc_id=doc["doc_id"],
+                ground_truth=doc["ground_truth"],
+                extraction_result=doc["extraction_result"],
+                mismatch_count=doc["mismatch_count"],
+                thumbnail_url=thumbnail_url,
+                mime_type=doc["mime_type"],
+            )
+        )
+    return results
 
 
 @app.get("/v1/deliveries", response_model=list[DeliveryResponse])

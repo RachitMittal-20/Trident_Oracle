@@ -229,3 +229,35 @@ def test_estimated_cost_is_zero_for_free_backends_and_positive_for_gemini() -> N
 
     assert estimated_cost_usd(tesseract_result) == 0.0
     assert estimated_cost_usd(gemini_result) > 0.0
+
+
+def test_count_header_mismatches_ignores_fields_absent_from_ground_truth() -> None:
+    from evals.metrics import count_header_mismatches
+
+    gt = _ground_truth(total="450.47", vendor_name=None, invoice_date=None)
+    pred = _prediction(total="450.47", vendor_name="Acme Corp.", invoice_date="2026-08-12")
+
+    # vendor_name/invoice_date are hallucinated (ground truth has nothing to
+    # compare against) but SROIE-style absence isn't itself a mismatch --
+    # only fields ground truth actually labeled count.
+    assert count_header_mismatches(gt, pred) == 0
+
+
+def test_count_header_mismatches_counts_wrong_and_missing_values() -> None:
+    from evals.metrics import count_header_mismatches
+
+    gt = _ground_truth(total="450.47", vendor_name="Acme Corp.", invoice_date="2026-08-12")
+    pred = _prediction(total="999.99", vendor_name=None, invoice_date="2026-08-12")
+
+    # total: wrong value (1 mismatch). vendor_name: ground truth has it,
+    # prediction doesn't (1 mismatch). invoice_date: matches (0).
+    assert count_header_mismatches(gt, pred) == 2
+
+
+def test_count_header_mismatches_zero_for_a_perfect_prediction() -> None:
+    from evals.metrics import count_header_mismatches
+
+    gt = _ground_truth()
+    pred = _prediction()
+
+    assert count_header_mismatches(gt, pred) == 0

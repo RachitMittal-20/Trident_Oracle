@@ -27,7 +27,6 @@ test only, never as evidence about line-item extraction quality.
 
 import json
 from collections.abc import Iterator
-from pathlib import Path
 
 from evals.datasets.base import DatasetLoader
 from evals.models import DatasetExample, GroundTruthDocument, GroundTruthHeader
