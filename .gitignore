@@ -4,6 +4,6 @@ node_modules/
 .next/
 .venv/
 *.pyc
-data/
-datasets/
+/data/
+/datasets/
 .DS_Store

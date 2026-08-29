@@ -517,10 +517,18 @@ version = "0.1.0"
 source = { editable = "packages/evals" }
 dependencies = [
     { name = "core" },
+    { name = "extractors" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "structlog" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "core", editable = "packages/core" }]
+requires-dist = [
+    { name = "core", editable = "packages/core" },
+    { name = "extractors", editable = "packages/extractors" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
+    { name = "structlog", specifier = ">=24.4" },
+]
 
 [[package]]
 name = "extractors"
@@ -1755,11 +1763,18 @@ name = "trident-oracle"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "api" },
+    { name = "approval-tokens" },
     { name = "core" },
+    { name = "evals" },
+    { name = "extractors" },
     { name = "fastapi" },
+    { name = "notifiers" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
+    { name = "storage" },
     { name = "uvicorn", extra = ["standard"] },
+    { name = "worker" },
 ]
 
 [package.dev-dependencies]
@@ -1772,11 +1787,18 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "api", editable = "apps/api" },
+    { name = "approval-tokens", editable = "packages/approval_tokens" },
     { name = "core", editable = "packages/core" },
+    { name = "evals", editable = "packages/evals" },
+    { name = "extractors", editable = "packages/extractors" },
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "notifiers", editable = "packages/notifiers" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "pydantic", specifier = ">=2.9" },
+    { name = "storage", editable = "packages/storage" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
+    { name = "worker", editable = "apps/worker" },
 ]
 
 [package.metadata.requires-dev]

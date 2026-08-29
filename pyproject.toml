@@ -8,10 +8,32 @@ dependencies = [
     "pydantic>=2.9",
     "psycopg[binary]>=3.2",
     "core",
+    "api",
+    "worker",
+    "extractors",
+    "notifiers",
+    "evals",
+    "storage",
+    "approval-tokens",
 ]
 
+# Every workspace member is listed above so a plain `uv sync` -- no
+# --all-packages flag -- installs all of them as editable, matching every
+# workspace package's own test suite needing its sibling packages
+# importable (e.g. apps/api/tests importing `api.*`, packages/evals
+# importing `extractors.*`). Discovered the hard way: this project has no
+# --all-packages default configured anywhere, so a plain `uv sync` had
+# quietly pruned every workspace package but `core` down to whatever this
+# list actually named.
 [tool.uv.sources]
 core = { workspace = true }
+api = { workspace = true }
+worker = { workspace = true }
+extractors = { workspace = true }
+notifiers = { workspace = true }
+evals = { workspace = true }
+storage = { workspace = true }
+approval-tokens = { workspace = true }
 
 [dependency-groups]
 dev = [
