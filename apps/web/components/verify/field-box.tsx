@@ -111,7 +111,10 @@ export function FieldBox({
     <div
       ref={wrapperRef}
       data-field-path={fieldPath}
-      className="absolute cursor-pointer"
+      role="button"
+      tabIndex={0}
+      aria-label={`Highlight field ${fieldPath}`}
+      className="absolute cursor-pointer rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
       style={{
         left: `${bbox.x * 100}%`,
         top: `${bbox.y * 100}%`,
@@ -122,7 +125,15 @@ export function FieldBox({
       }}
       onMouseEnter={() => onHoverChange(fieldPath)}
       onMouseLeave={() => onHoverChange(null)}
+      onFocus={() => onHoverChange(fieldPath)}
+      onBlur={() => onHoverChange(null)}
       onClick={() => onClick(fieldPath)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick(fieldPath);
+        }
+      }}
     >
       <svg className="absolute inset-0 h-full w-full overflow-visible">
         <rect

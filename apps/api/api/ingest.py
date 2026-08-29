@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import psycopg
+from core.errors import TridentOracleError
 from core.magic_bytes import sniff_mime_type
 from core.models import Invoice, InvoiceStatus
 from storage.base import Storage
@@ -24,11 +25,11 @@ from api import db
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
-class UnsupportedFileType(Exception):
+class UnsupportedFileType(TridentOracleError):
     """The bytes don't sniff as a supported format (PDF/PNG/JPEG)."""
 
 
-class FileTooLarge(Exception):
+class FileTooLarge(TridentOracleError):
     """Exceeds MAX_UPLOAD_BYTES."""
 
 

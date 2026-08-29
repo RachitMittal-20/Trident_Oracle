@@ -29,12 +29,14 @@ from urllib.parse import urlparse
 
 import httpx
 import structlog
+from core.errors import StorageError
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from psycopg import Connection
 from storage.base import Storage
 
 from api.config import get_connection, get_storage
 from api.ingest import DuplicateInvoice, FileTooLarge, UnsupportedFileType, ingest_invoice
+from api.ratelimit import rate_limit_dependency, webhook_rate_limiter
 from api.schemas import DuplicateInvoiceDetail, UploadResponse, WebhookInvoicePayload
 
 log = structlog.get_logger()
@@ -140,7 +142,12 @@ def fetch_file_url(url: str, *, client: httpx.Client | None = None) -> bytes:
     return response.content
 
 
-@router.post("/v1/webhooks/invoices", status_code=202, response_model=UploadResponse)
+@router.post(
+    "/v1/webhooks/invoices",
+    status_code=202,
+    response_model=UploadResponse,
+    dependencies=[Depends(rate_limit_dependency(webhook_rate_limiter))],
+)
 async def webhook_invoice(
     request: Request,
     conn: Annotated[Connection, Depends(get_connection)],
@@ -199,6 +206,13 @@ async def webhook_invoice(
         raise HTTPException(
             status_code=415, detail="unsupported file type -- must be a PDF, PNG, or JPEG"
         ) from exc
+    except StorageError as exc:
+        # Same reasoning as POST /v1/invoices/upload (api/main.py): a
+        # distinct, mapped failure mode, real detail logged server-side only.
+        log.error(
+            "webhook_invoice_storage_failed", tenant_id=str(payload.tenant_id), error=str(exc)
+        )
+        raise HTTPException(status_code=502, detail="storage backend unavailable") from exc
 
     if isinstance(outcome, DuplicateInvoice):
         raise HTTPException(

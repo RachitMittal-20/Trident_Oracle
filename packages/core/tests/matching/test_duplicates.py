@@ -248,6 +248,24 @@ def test_line_overlap_just_under_seventy_percent_does_not_trigger() -> None:
     assert findings == ()
 
 
+def test_invoice_date_exactly_at_duplicate_window_boundary_triggers() -> None:
+    policy = make_policy(duplicate_window_days=30)
+    prior = make_summary(
+        content_hash=HASH_A, invoice_number="INV-1001", invoice_date=date(2026, 1, 1)
+    )
+    candidate = make_summary(
+        content_hash=HASH_B,
+        invoice_number="INV-1002",
+        invoice_date=date(2026, 1, 31),  # exactly 30 days apart
+        total=Decimal("10000.00"),
+    )
+
+    findings = find_duplicates(candidate, [prior], policy)
+
+    assert len(findings) == 1
+    assert findings[0].exception_type == ExceptionType.SUSPECTED_DUPLICATE
+
+
 def test_invoice_date_outside_duplicate_window_does_not_trigger() -> None:
     policy = make_policy(duplicate_window_days=30)
     prior = make_summary(

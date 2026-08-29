@@ -419,6 +419,24 @@ def test_qty_tolerance_boundary_just_over_is_flagged() -> None:
     assert ExceptionType.QTY_OVER in types
 
 
+def test_qty_over_when_grn_received_nothing_for_this_line() -> None:
+    # received_qty == 0 exercises the division-by-zero guard in
+    # _qty_finding's delta_pct calc (100% over by definition, not a ZeroDivisionError).
+    s = baseline()
+    other_po_line = make_po_line(id=uuid.uuid4())
+    s.grn_line = make_grn_line(
+        po_line_id=other_po_line.id, qty_received=Decimal("5"), condition="good"
+    )
+
+    result = run(s)
+
+    findings = [f for f in result.findings if f.exception_type == ExceptionType.QTY_OVER]
+    assert len(findings) == 1
+    assert findings[0].expected_value == Decimal("0")
+    assert findings[0].delta_pct == Decimal("100")
+    assert result.result == "blocked"
+
+
 def test_damaged_receipt_lines_excluded_from_qty_received() -> None:
     s = baseline()
     damaged = make_grn_line(
@@ -514,6 +532,27 @@ def test_price_variance_records_delta_and_delta_pct() -> None:
     assert finding.actual_value == Decimal("110.00")
     assert finding.delta == Decimal("10.00")
     assert finding.delta_pct == Decimal("10.00")
+
+
+def test_price_variance_when_po_line_unit_price_is_zero() -> None:
+    # expected == 0 exercises the division-by-zero guard in _price_finding's
+    # delta_pct calc (100% variance by definition, not a ZeroDivisionError).
+    s = baseline()
+    s.po_line = make_po_line(
+        qty_ordered=Decimal("1"), unit_price=Decimal("0.00"), line_total=Decimal("0.00")
+    )
+    s.grn_line = make_grn_line(po_line_id=s.po_line.id, qty_received=Decimal("1"), condition="good")
+    s.invoice_line = make_invoice_line(
+        qty=Decimal("1"), unit_price=Decimal("5.00"), line_total=Decimal("5.00")
+    )
+    s.invoice = make_invoice(subtotal=Decimal("5.00"), total=Decimal("5.00"))
+
+    result = run(s)
+
+    findings = [f for f in result.findings if f.exception_type == ExceptionType.PRICE_VARIANCE]
+    assert len(findings) == 1
+    assert findings[0].delta_pct == Decimal("100")
+    assert findings[0].severity == Severity.BLOCK
 
 
 def test_exact_price_match_produces_no_finding() -> None:
@@ -614,6 +653,50 @@ def test_no_tax_mismatch_for_an_expected_slab_rate() -> None:
     assert ExceptionType.TAX_MISMATCH not in types
 
 
+def test_tax_rate_exactly_at_epsilon_boundary_is_not_flagged() -> None:
+    # effective rate 18.5% is exactly DEFAULT_TAX_RATE_EPSILON_PCT (0.5pp)
+    # away from the 18% slab -- must still count as a match, not a mismatch.
+    s = baseline()
+    s.invoice = make_invoice(
+        subtotal=Decimal("100.00"), tax=Decimal("18.50"), total=Decimal("118.50")
+    )
+    s.po_line = make_po_line(
+        qty_ordered=Decimal("10"), unit_price=Decimal("10.00"), line_total=Decimal("100.00")
+    )
+    s.grn_line = make_grn_line(
+        po_line_id=s.po_line.id, qty_received=Decimal("10"), condition="good"
+    )
+    s.invoice_line = make_invoice_line(
+        qty=Decimal("10"), unit_price=Decimal("10.00"), line_total=Decimal("100.00")
+    )
+
+    result = run(s)
+
+    types = [f.exception_type for f in result.findings]
+    assert ExceptionType.TAX_MISMATCH not in types
+
+
+def test_tax_rate_just_over_epsilon_boundary_is_flagged() -> None:
+    s = baseline()
+    s.invoice = make_invoice(
+        subtotal=Decimal("100.00"), tax=Decimal("18.51"), total=Decimal("118.51")
+    )
+    s.po_line = make_po_line(
+        qty_ordered=Decimal("10"), unit_price=Decimal("10.00"), line_total=Decimal("100.00")
+    )
+    s.grn_line = make_grn_line(
+        po_line_id=s.po_line.id, qty_received=Decimal("10"), condition="good"
+    )
+    s.invoice_line = make_invoice_line(
+        qty=Decimal("10"), unit_price=Decimal("10.00"), line_total=Decimal("100.00")
+    )
+
+    result = run(s)
+
+    types = [f.exception_type for f in result.findings]
+    assert ExceptionType.TAX_MISMATCH in types
+
+
 def test_date_anomaly_invoice_precedes_po() -> None:
     s = baseline()
     s.po = make_po(issued_at=datetime(2026, 1, 10, tzinfo=UTC))
@@ -634,6 +717,27 @@ def test_date_anomaly_invoice_postdates_today() -> None:
 
     findings = [f for f in result.findings if f.exception_type == ExceptionType.DATE_ANOMALY]
     assert len(findings) == 1
+
+
+def test_date_anomaly_boundary_invoice_dated_exactly_today_is_not_flagged() -> None:
+    s = baseline()
+    s.invoice = make_invoice(invoice_date=date(2026, 1, 15))
+
+    result = run(s, today=date(2026, 1, 15))
+
+    types = [f.exception_type for f in result.findings]
+    assert ExceptionType.DATE_ANOMALY not in types
+
+
+def test_date_anomaly_boundary_invoice_dated_exactly_po_issue_date_is_not_flagged() -> None:
+    s = baseline()
+    s.po = make_po(issued_at=datetime(2026, 1, 5, tzinfo=UTC))
+    s.invoice = make_invoice(invoice_date=date(2026, 1, 5))
+
+    result = run(s)
+
+    types = [f.exception_type for f in result.findings]
+    assert ExceptionType.DATE_ANOMALY not in types
 
 
 # --- Result classification ---------------------------------------------------

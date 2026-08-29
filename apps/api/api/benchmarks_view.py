@@ -20,7 +20,7 @@ def _decimal_str(value: Any) -> str | None:
     return str(value) if value is not None else None
 
 
-def list_runs(conn: psycopg.Connection[Any]) -> list[dict[str, Any]]:
+def list_runs(conn: psycopg.Connection[Any], *, limit: int = 100) -> list[dict[str, Any]]:
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             """
@@ -28,7 +28,9 @@ def list_runs(conn: psycopg.Connection[Any]) -> list[dict[str, Any]]:
                    started_at, finished_at
             from eval_runs
             order by started_at desc
-            """
+            limit %(limit)s
+            """,
+            {"limit": limit},
         )
         rows = cur.fetchall()
     return [

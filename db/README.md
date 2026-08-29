@@ -236,3 +236,10 @@ without any manual `CREATE ROLE` step.
   values (see comments in 0003 and 0006) — the architecture doc doesn't specify
   these lifecycles, so they'll likely need a follow-up migration once the
   corresponding flows are built.
+- `apps/api/api/ratelimit.py`'s upload/webhook/approval rate limiters are
+  in-memory and per-process (see that module's own docstring) — a known,
+  accepted limit for this project's single-process deployment (CLAUDE.md's
+  Postgres-only queue, no horizontal API scaling story), not an oversight.
+  Restarting the API process, or running more than one instance of it,
+  resets or fragments every bucket; a real multi-instance deployment would
+  need a shared store (e.g. counters in Postgres) instead.

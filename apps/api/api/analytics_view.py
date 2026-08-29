@@ -377,6 +377,7 @@ def get_vendors(conn: psycopg.Connection[Any]) -> list[dict[str, Any]]:
             left join vendor_price_variance vpv on vpv.vendor_id = vi.vendor_id
             group by vi.vendor_id, vi.vendor_name, vpv.mean_price_variance_pct
             order by exception_rate desc, invoice_count desc
+            limit 200
             """
         )
         rows = cur.fetchall()

@@ -12,6 +12,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { parseFieldPath } from "@/lib/field-paths";
+import { cn } from "@/lib/utils";
 import type { FieldConfidence, InvoiceLine, VerificationInvoice } from "@/lib/verify-api";
 
 export interface FieldsPanelProps {
@@ -156,10 +157,24 @@ export function FieldsPanel({
                       return (
                         <TableCell
                           key={column}
-                          className={isHovered ? "bg-bg-overlay" : undefined}
+                          role="button"
+                          tabIndex={0}
+                          aria-label={`Highlight ${column} on the invoice image`}
+                          className={cn(
+                            "outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+                            isHovered && "bg-bg-overlay",
+                          )}
                           onMouseEnter={() => onHoverField(entry.fc.fieldPath)}
                           onMouseLeave={() => onHoverField(null)}
+                          onFocus={() => onHoverField(entry.fc.fieldPath)}
+                          onBlur={() => onHoverField(null)}
                           onClick={() => onClickField(entry.fc.fieldPath)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              onClickField(entry.fc.fieldPath);
+                            }
+                          }}
                         >
                           <div className="flex flex-col gap-1">
                             <EditableValue

@@ -65,6 +65,7 @@ def list_exceptions(
     date_to: date | None = None,
     sort: SortField = "age",
     order: SortOrder = "desc",
+    limit: int = 200,
 ) -> dict[str, Any]:
     clauses = ["e.status = %(status)s"]
     params: dict[str, Any] = {"status": status}
@@ -100,8 +101,9 @@ def list_exceptions(
             LEFT JOIN vendors v ON v.id = i.vendor_id
             WHERE {" AND ".join(clauses)}
             ORDER BY {sort_expr} {direction}, e.created_at DESC
+            LIMIT %(limit)s
             """,  # noqa: S608 -- sort_expr/direction are from the fixed maps above, never user input
-            params,
+            {**params, "limit": limit},
         )
         rows = cur.fetchall()
 

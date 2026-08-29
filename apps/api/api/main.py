@@ -16,8 +16,8 @@ from typing import Annotated, Any, Literal
 
 import psycopg
 import structlog
-from core.errors import InvalidStateTransition, TokenError
-from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, UploadFile
+from core.errors import InvalidStateTransition, StorageError, TokenError
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from notifiers.telegram import TelegramNotifier
@@ -43,6 +43,11 @@ from api.config import (
 )
 from api.events import EventBroadcaster, listen_for_events
 from api.ingest import DuplicateInvoice, FileTooLarge, UnsupportedFileType, ingest_invoice
+from api.ratelimit import (
+    approval_rate_limiter,
+    rate_limit_dependency,
+    upload_rate_limiter,
+)
 from api.schemas import (
     AnalyticsSummaryResponse,
     AutoPostTrendPoint,
@@ -115,7 +120,12 @@ def health() -> dict[str, str]:
     return {"status": "ok", "version": __version__}
 
 
-@app.post("/v1/invoices/upload", status_code=202, response_model=UploadResponse)
+@app.post(
+    "/v1/invoices/upload",
+    status_code=202,
+    response_model=UploadResponse,
+    dependencies=[Depends(rate_limit_dependency(upload_rate_limiter))],
+)
 async def upload_invoice(
     file: UploadFile,
     tenant_id: Annotated[uuid.UUID, Form()],
@@ -145,6 +155,16 @@ async def upload_invoice(
         raise HTTPException(
             status_code=415, detail="unsupported file type -- must be a PDF, PNG, or JPEG"
         ) from exc
+    except StorageError as exc:
+        # The storage backend itself failed (network, credentials, bucket
+        # config) -- a real, distinct failure mode from "your file was bad"
+        # (413/415 above), and not something to let fall through to a bare
+        # unhandled-exception 500. The real message (which can include a
+        # raw provider response body -- packages/storage/storage/
+        # supabase_storage.py) is logged server-side only; the client gets
+        # a fixed, generic detail, same reasoning as every TokenError below.
+        log.error("invoice_upload_storage_failed", tenant_id=str(tenant_id), error=str(exc))
+        raise HTTPException(status_code=502, detail="storage backend unavailable") from exc
 
     if isinstance(outcome, DuplicateInvoice):
         # A hard duplicate never reaches extraction -- reject before any
@@ -293,11 +313,22 @@ def get_exceptions(
     severity: Literal["info", "warn", "block"] | None = None,
     exception_type: str | None = None,
     vendor_id: uuid.UUID | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
+    # Typed as `date`, not `str`, so a malformed value is rejected by
+    # FastAPI/Pydantic itself with a 422 before this function body ever
+    # runs -- the previous `str` type plus a manual, unguarded
+    # date.fromisoformat() call let a bad value raise ValueError straight
+    # into an unhandled-exception 500 instead.
+    date_from: date | None = None,
+    date_to: date | None = None,
     sort: Literal["severity", "age", "amount"] = "age",
     order: Literal["asc", "desc"] = "desc",
+    page_size: Annotated[int, Query(ge=1, le=200)] = 200,
 ) -> ExceptionsListResponse:
+    # page_size defaults to 200 (not a small page) specifically so today's
+    # frontend -- which has no pagination UI and simply renders every open
+    # exception returned -- keeps working unchanged for any realistic
+    # queue size; the cap exists only to put a hard ceiling under
+    # "unbounded", not to change current behavior.
     db.set_tenant(conn, tenant_id)
     result = exceptions_view.list_exceptions(
         conn,
@@ -305,10 +336,11 @@ def get_exceptions(
         severity=severity,
         exception_type=exception_type,
         vendor_id=vendor_id,
-        date_from=date.fromisoformat(date_from) if date_from else None,
-        date_to=date.fromisoformat(date_to) if date_to else None,
+        date_from=date_from,
+        date_to=date_to,
         sort=sort,
         order=order,
+        limit=page_size,
     )
     return ExceptionsListResponse(**result)
 
@@ -340,8 +372,8 @@ def get_invoices(
     status: str | None = None,
     sort: Literal["invoice_date", "total", "status", "created_at", "invoice_number"] = "created_at",
     order: Literal["asc", "desc"] = "desc",
-    page: int = 1,
-    page_size: int = 25,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 25,
 ) -> InvoiceListResponse:
     db.set_tenant(conn, tenant_id)
     result = invoices_list.list_invoices(
@@ -354,7 +386,7 @@ def get_invoices(
 def get_analytics_summary(
     tenant_id: uuid.UUID,
     conn: Annotated[psycopg.Connection, Depends(get_connection)],
-    days: int = 30,
+    days: Annotated[int, Query(ge=1, le=3650)] = 30,
 ) -> AnalyticsSummaryResponse:
     db.set_tenant(conn, tenant_id)
     return AnalyticsSummaryResponse(**analytics_view.get_summary(conn, days=days))
@@ -364,7 +396,7 @@ def get_analytics_summary(
 def get_analytics_volume_over_time(
     tenant_id: uuid.UUID,
     conn: Annotated[psycopg.Connection, Depends(get_connection)],
-    days: int = 30,
+    days: Annotated[int, Query(ge=1, le=3650)] = 30,
 ) -> list[VolumePoint]:
     db.set_tenant(conn, tenant_id)
     return [VolumePoint(**row) for row in analytics_view.get_volume_over_time(conn, days=days)]
@@ -374,7 +406,7 @@ def get_analytics_volume_over_time(
 def get_analytics_exceptions_by_type(
     tenant_id: uuid.UUID,
     conn: Annotated[psycopg.Connection, Depends(get_connection)],
-    days: int = 30,
+    days: Annotated[int, Query(ge=1, le=3650)] = 30,
 ) -> list[ExceptionTypeCount]:
     db.set_tenant(conn, tenant_id)
     rows = analytics_view.get_exceptions_by_type(conn, days=days)
@@ -385,7 +417,7 @@ def get_analytics_exceptions_by_type(
 def get_analytics_confidence_distribution(
     tenant_id: uuid.UUID,
     conn: Annotated[psycopg.Connection, Depends(get_connection)],
-    days: int = 30,
+    days: Annotated[int, Query(ge=1, le=3650)] = 30,
 ) -> list[ConfidenceBucket]:
     db.set_tenant(conn, tenant_id)
     rows = analytics_view.get_confidence_distribution(conn, days=days)
@@ -396,7 +428,7 @@ def get_analytics_confidence_distribution(
 def get_analytics_latency(
     tenant_id: uuid.UUID,
     conn: Annotated[psycopg.Connection, Depends(get_connection)],
-    days: int = 30,
+    days: Annotated[int, Query(ge=1, le=3650)] = 30,
 ) -> LatencyResponse:
     db.set_tenant(conn, tenant_id)
     return LatencyResponse.model_validate(analytics_view.get_latency(conn, days=days))
@@ -406,7 +438,7 @@ def get_analytics_latency(
 def get_analytics_auto_post_trend(
     tenant_id: uuid.UUID,
     conn: Annotated[psycopg.Connection, Depends(get_connection)],
-    days: int = 30,
+    days: Annotated[int, Query(ge=1, le=3650)] = 30,
 ) -> list[AutoPostTrendPoint]:
     db.set_tenant(conn, tenant_id)
     rows = analytics_view.get_auto_post_trend(conn, days=days)
@@ -442,8 +474,9 @@ def get_analytics_delivery_health(
 @app.get("/v1/benchmarks/runs", response_model=list[EvalRunSummary])
 def list_eval_runs(
     conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
 ) -> list[EvalRunSummary]:
-    return [EvalRunSummary(**row) for row in benchmarks_view.list_runs(conn)]
+    return [EvalRunSummary(**row) for row in benchmarks_view.list_runs(conn, limit=limit)]
 
 
 @app.get("/v1/benchmarks/runs/{run_id}", response_model=EvalRunDetail)
@@ -462,7 +495,7 @@ def get_eval_run_failures(
     run_id: uuid.UUID,
     conn: Annotated[psycopg.Connection, Depends(get_connection)],
     storage: Annotated[Storage, Depends(get_storage)],
-    limit: int = 12,
+    limit: Annotated[int, Query(ge=1, le=100)] = 12,
 ) -> list[EvalFailureDocument]:
     documents = benchmarks_view.get_failures(conn, run_id, limit=limit)
     results = []
@@ -490,8 +523,8 @@ def list_deliveries(
     status: Literal["pending", "sent", "failed", "dead"] | None = None,
     channel: Literal["telegram", "email", "whatsapp"] | None = None,
     invoice_id: uuid.UUID | None = None,
-    limit: int = 50,
-    offset: int = 0,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[DeliveryResponse]:
     # tenant_id as a query param carries the same auth-placeholder caveat as
     # every other endpoint here -- RLS (tenant_isolation on
@@ -569,7 +602,11 @@ async def stream_pipeline_events(
 # "already used" from "not found".
 
 
-@app.get("/v1/approvals/{token}", response_class=HTMLResponse)
+@app.get(
+    "/v1/approvals/{token}",
+    response_class=HTMLResponse,
+    dependencies=[Depends(rate_limit_dependency(approval_rate_limiter))],
+)
 def get_approval_page(
     token: str,
     conn: Annotated[psycopg.Connection, Depends(get_approval_redeemer_connection)],
@@ -582,7 +619,11 @@ def get_approval_page(
     return HTMLResponse(approvals.render_approval_page(preview))
 
 
-@app.post("/v1/approvals/{token}", response_class=HTMLResponse)
+@app.post(
+    "/v1/approvals/{token}",
+    response_class=HTMLResponse,
+    dependencies=[Depends(rate_limit_dependency(approval_rate_limiter))],
+)
 def post_approval_decision(
     token: str,
     decision: Annotated[str, Form()],
