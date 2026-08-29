@@ -268,3 +268,67 @@ class InvoiceListResponse(BaseModel):
     page: int
     page_size: int
     status_counts: dict[str, int]
+
+
+class AnalyticsSummaryResponse(BaseModel):
+    period_days: int
+    invoices_processed: int
+    invoices_processed_delta: int
+    auto_post_rate_pct: str | None
+    mean_extraction_confidence: str | None
+    exceptions_by_severity: dict[str, int]
+    value_at_risk: str
+    mean_seconds_to_decision: float | None
+
+
+class VolumePoint(BaseModel):
+    day: str
+    outcome: str
+    count: int
+
+
+class ExceptionTypeCount(BaseModel):
+    exception_type: str
+    count: int
+
+
+class ConfidenceBucket(BaseModel):
+    bucket_start: float
+    bucket_end: float
+    count: int
+
+
+class LatencyPercentiles(BaseModel):
+    p50: float | None
+    p95: float | None
+    p99: float | None
+
+
+class LatencyResponse(BaseModel):
+    extraction: LatencyPercentiles
+    matching: LatencyPercentiles
+    notification: LatencyPercentiles
+
+
+class AutoPostTrendPoint(BaseModel):
+    day: str
+    auto_posted: int
+    settled: int
+    rate_pct: str | None
+
+
+class VendorAnalyticsRow(BaseModel):
+    vendor_id: str
+    vendor_name: str
+    invoice_count: int
+    exception_rate_pct: str
+    mean_price_variance_pct: str | None
+
+
+class DeliveryHealthResponse(BaseModel):
+    total_deliveries: int
+    sent_deliveries: int
+    success_rate_pct: str | None
+    mean_attempts: str
+    max_attempts: int
+    dead_letter_count: int

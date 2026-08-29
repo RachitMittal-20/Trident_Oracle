@@ -25,6 +25,7 @@ from storage.base import Storage
 
 from api import (
     __version__,
+    analytics_view,
     approvals,
     db,
     exceptions_view,
@@ -42,23 +43,31 @@ from api.config import (
 from api.events import EventBroadcaster, listen_for_events
 from api.ingest import DuplicateInvoice, FileTooLarge, UnsupportedFileType, ingest_invoice
 from api.schemas import (
+    AnalyticsSummaryResponse,
+    AutoPostTrendPoint,
+    ConfidenceBucket,
     DecideRequest,
     DecideResponse,
+    DeliveryHealthResponse,
     DeliveryResponse,
     DuplicateInvoiceDetail,
     ExceptionsListResponse,
+    ExceptionTypeCount,
     FieldConfidenceResponse,
     FieldCorrectionRequest,
     FieldCorrectionResponse,
     InvoiceLineResponse,
     InvoiceListResponse,
     InvoiceResponse,
+    LatencyResponse,
     MatchViewResponse,
     RerunMatchResponse,
     ResolveExceptionRequest,
     ResolveExceptionResponse,
     TelegramUpdate,
     UploadResponse,
+    VendorAnalyticsRow,
+    VolumePoint,
 )
 
 log = structlog.get_logger()
@@ -335,6 +344,87 @@ def get_invoices(
         conn, status=status, sort=sort, order=order, page=page, page_size=page_size
     )
     return InvoiceListResponse(**result)
+
+
+@app.get("/v1/analytics/summary", response_model=AnalyticsSummaryResponse)
+def get_analytics_summary(
+    tenant_id: uuid.UUID,
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    days: int = 30,
+) -> AnalyticsSummaryResponse:
+    db.set_tenant(conn, tenant_id)
+    return AnalyticsSummaryResponse(**analytics_view.get_summary(conn, days=days))
+
+
+@app.get("/v1/analytics/volume-over-time", response_model=list[VolumePoint])
+def get_analytics_volume_over_time(
+    tenant_id: uuid.UUID,
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    days: int = 30,
+) -> list[VolumePoint]:
+    db.set_tenant(conn, tenant_id)
+    return [VolumePoint(**row) for row in analytics_view.get_volume_over_time(conn, days=days)]
+
+
+@app.get("/v1/analytics/exceptions-by-type", response_model=list[ExceptionTypeCount])
+def get_analytics_exceptions_by_type(
+    tenant_id: uuid.UUID,
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    days: int = 30,
+) -> list[ExceptionTypeCount]:
+    db.set_tenant(conn, tenant_id)
+    rows = analytics_view.get_exceptions_by_type(conn, days=days)
+    return [ExceptionTypeCount(**row) for row in rows]
+
+
+@app.get("/v1/analytics/confidence-distribution", response_model=list[ConfidenceBucket])
+def get_analytics_confidence_distribution(
+    tenant_id: uuid.UUID,
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    days: int = 30,
+) -> list[ConfidenceBucket]:
+    db.set_tenant(conn, tenant_id)
+    rows = analytics_view.get_confidence_distribution(conn, days=days)
+    return [ConfidenceBucket(**row) for row in rows]
+
+
+@app.get("/v1/analytics/latency", response_model=LatencyResponse)
+def get_analytics_latency(
+    tenant_id: uuid.UUID,
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    days: int = 30,
+) -> LatencyResponse:
+    db.set_tenant(conn, tenant_id)
+    return LatencyResponse.model_validate(analytics_view.get_latency(conn, days=days))
+
+
+@app.get("/v1/analytics/auto-post-trend", response_model=list[AutoPostTrendPoint])
+def get_analytics_auto_post_trend(
+    tenant_id: uuid.UUID,
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+    days: int = 30,
+) -> list[AutoPostTrendPoint]:
+    db.set_tenant(conn, tenant_id)
+    rows = analytics_view.get_auto_post_trend(conn, days=days)
+    return [AutoPostTrendPoint(**row) for row in rows]
+
+
+@app.get("/v1/analytics/vendors", response_model=list[VendorAnalyticsRow])
+def get_analytics_vendors(
+    tenant_id: uuid.UUID,
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+) -> list[VendorAnalyticsRow]:
+    db.set_tenant(conn, tenant_id)
+    return [VendorAnalyticsRow(**row) for row in analytics_view.get_vendors(conn)]
+
+
+@app.get("/v1/analytics/delivery-health", response_model=DeliveryHealthResponse)
+def get_analytics_delivery_health(
+    tenant_id: uuid.UUID,
+    conn: Annotated[psycopg.Connection, Depends(get_connection)],
+) -> DeliveryHealthResponse:
+    db.set_tenant(conn, tenant_id)
+    return DeliveryHealthResponse(**analytics_view.get_delivery_health(conn))
 
 
 @app.get("/v1/deliveries", response_model=list[DeliveryResponse])

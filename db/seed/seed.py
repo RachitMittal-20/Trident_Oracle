@@ -21,6 +21,7 @@ doesn't reconcile, construction raises and the whole seed aborts loudly
 instead of writing bad data.
 """
 
+import hashlib
 import os
 import random
 import sys
@@ -33,10 +34,15 @@ from typing import Literal
 
 import psycopg
 from core.models import (
+    ExceptionType,
     GoodsReceipt,
     GoodsReceiptLine,
+    Invoice,
+    InvoiceStatus,
+    MatchException,
     PurchaseOrder,
     PurchaseOrderLine,
+    Severity,
     Tenant,
     TolerancePolicy,
     Vendor,
@@ -72,6 +78,11 @@ VENDOR_NAMES = [
     "Global Fasteners Inc.",
     "BlueSky Logistics",
     "Bluesky Logistics Pvt. Ltd.",
+    # Not a messy-duplicate pair like the eight above -- this one exists
+    # purely so /analytics has a vendor with a genuinely high exception
+    # rate to flag ("which of my suppliers keeps overbilling me"), per
+    # build_analytics_dataset() below.
+    "Globex Manufacturing",
 ]
 
 CATALOG: list[tuple[str, str, Decimal]] = [
@@ -331,6 +342,266 @@ def tolerance_policy_rules(policy: TolerancePolicy) -> dict[str, float | int]:
     }
 
 
+# --- Analytics (invoices, matching/notification activity) --------------------
+#
+# Everything above this point is procurement reference data (vendors, POs,
+# GRNs) with fixed calendar dates -- reproducible forever, since nothing
+# reads them relative to "now". /analytics reads the opposite way: every
+# query filters on a rolling `now() - N days` window (apps/api/api/
+# analytics_view.py), so seed data anchored to a fixed past date would
+# eventually age out of every window and the dashboard would go back to
+# looking empty on a fresh clone months from now. These rows are anchored
+# to the seed run's own `now()` instead -- the one deliberate departure
+# from this file's otherwise-fixed-date convention, and the reason this
+# section keeps its own `_now` rather than reusing START_DATE.
+#
+# None of match_runs/match_exceptions/jobs/notification_deliveries/
+# dead_letters/audit_log have a packages/core dataclass (core models the
+# pure matching domain; these are operational/infra rows -- a queue entry,
+# an audit trail line -- same reason build_users() below is a plain tuple
+# list too), so they're built as plain tuples. invoices and match_exceptions
+# do have core dataclasses and go through them first for the same reason
+# the module docstring gives for POs/GRNs: __post_init__ validation is a
+# safety net against generating something that doesn't reconcile.
+
+ANALYTICS_LOW_EXCEPTION_VENDOR = 0  # "ACME Corp." -- steady, few exceptions
+ANALYTICS_HIGH_EXCEPTION_VENDOR = 8  # "Globex Manufacturing" -- flagged by design
+
+# (n, vendor index into VENDOR_NAMES, day offset before the seed run, status,
+# overall_confidence, total)
+ANALYTICS_INVOICE_SPECS: list[tuple[int, int, int, str, float | None, str]] = [
+    (1, ANALYTICS_LOW_EXCEPTION_VENDOR, 19, "AUTO_POSTED", 0.97, "420.00"),
+    (2, ANALYTICS_LOW_EXCEPTION_VENDOR, 18, "AUTO_POSTED", 0.95, "315.50"),
+    (3, ANALYTICS_LOW_EXCEPTION_VENDOR, 17, "POSTED", 0.91, "980.00"),
+    (4, ANALYTICS_LOW_EXCEPTION_VENDOR, 16, "AUTO_POSTED", 0.98, "210.00"),
+    (5, ANALYTICS_LOW_EXCEPTION_VENDOR, 15, "MATCHED_CLEAN", 0.93, "540.00"),
+    (6, ANALYTICS_LOW_EXCEPTION_VENDOR, 14, "EXCEPTIONS_RAISED", 0.88, "1250.00"),
+    (7, ANALYTICS_LOW_EXCEPTION_VENDOR, 13, "AUTO_POSTED", 0.96, "175.25"),
+    (8, ANALYTICS_LOW_EXCEPTION_VENDOR, 12, "PENDING_APPROVAL", 0.82, "3200.00"),
+    (9, ANALYTICS_LOW_EXCEPTION_VENDOR, 11, "APPROVED", 0.90, "640.00"),
+    (10, ANALYTICS_LOW_EXCEPTION_VENDOR, 10, "AUTO_POSTED", 0.99, "88.00"),
+    (11, ANALYTICS_LOW_EXCEPTION_VENDOR, 8, "AUTO_POSTED", 0.94, "460.00"),
+    (12, ANALYTICS_LOW_EXCEPTION_VENDOR, 6, "NEEDS_VERIFICATION", 0.58, "720.00"),
+    (13, ANALYTICS_LOW_EXCEPTION_VENDOR, 4, "AUTO_POSTED", 0.97, "300.00"),
+    (14, ANALYTICS_LOW_EXCEPTION_VENDOR, 2, "RECEIVED", None, "150.00"),
+    (15, ANALYTICS_HIGH_EXCEPTION_VENDOR, 19, "EXCEPTIONS_RAISED", 0.85, "2100.00"),
+    (16, ANALYTICS_HIGH_EXCEPTION_VENDOR, 17, "REJECTED", 0.80, "1875.00"),
+    (17, ANALYTICS_HIGH_EXCEPTION_VENDOR, 16, "AUTO_POSTED", 0.93, "260.00"),
+    (18, ANALYTICS_HIGH_EXCEPTION_VENDOR, 14, "PENDING_APPROVAL", 0.78, "4500.00"),
+    (19, ANALYTICS_HIGH_EXCEPTION_VENDOR, 12, "EXCEPTIONS_RAISED", 0.86, "990.00"),
+    (20, ANALYTICS_HIGH_EXCEPTION_VENDOR, 10, "APPROVED", 0.89, "610.00"),
+    (21, ANALYTICS_HIGH_EXCEPTION_VENDOR, 9, "REJECTED", 0.75, "2250.00"),
+    (22, ANALYTICS_HIGH_EXCEPTION_VENDOR, 7, "AUTO_POSTED", 0.92, "340.00"),
+    (23, ANALYTICS_HIGH_EXCEPTION_VENDOR, 5, "EXTRACTION_FAILED", None, "0.00"),
+    (24, ANALYTICS_HIGH_EXCEPTION_VENDOR, 3, "AUTO_POSTED", 0.95, "410.00"),
+]
+
+# invoice n -> (exception_type, severity, expected, actual, delta_pct, status, detail)
+_ExceptionSpec = tuple[str, str, str | None, str | None, str | None, str, str]
+ANALYTICS_EXCEPTION_SPECS: dict[int, _ExceptionSpec] = {
+    6: (
+        "PRICE_VARIANCE", "warn", "120.00", "150.00", "25.0", "open",
+        "Unit price on line 1 is 25% above the purchase order price.",
+    ),
+    8: (
+        "QTY_OVER", "warn", None, None, None, "open",
+        "Invoiced quantity exceeds the goods receipt.",
+    ),
+    15: (
+        "PRICE_VARIANCE", "block", "200.00", "310.00", "55.0", "open",
+        "Unit price on line 1 is 55% above the purchase order price -- well outside tolerance.",
+    ),
+    16: (
+        "DUPLICATE_INVOICE", "block", None, None, None, "dismissed",
+        "Duplicate of a previously posted invoice.",
+    ),
+    18: (
+        "PRICE_VARIANCE", "block", "500.00", "890.00", "78.0", "open",
+        "Unit price on line 1 is 78% above the purchase order price -- well outside tolerance.",
+    ),
+    19: (
+        "PRICE_VARIANCE", "warn", "90.00", "108.00", "20.0", "open",
+        "Unit price on line 1 is 20% above the purchase order price.",
+    ),
+    21: (
+        "NO_GRN", "block", None, None, None, "dismissed",
+        "No goods receipt on file for this purchase order.",
+    ),
+}
+
+# invoice n -> hours from creation to the audit_log 'approval_decided' entry.
+ANALYTICS_DECISION_HOURS: dict[int, float] = {9: 4, 16: 26, 20: 6, 21: 3}
+
+
+def build_analytics_dataset(
+    tenant_id: uuid.UUID, vendors: list[Vendor], approver_id: uuid.UUID
+) -> dict[str, list[tuple[object, ...]]]:
+    now = datetime.now(UTC)
+
+    invoices: list[Invoice] = []
+    invoice_rows: list[tuple[object, ...]] = []
+    invoice_created_at: dict[int, datetime] = {}
+    for n, vendor_idx, day_offset, status, confidence, total in ANALYTICS_INVOICE_SPECS:
+        created_at = now - timedelta(days=day_offset)
+        invoice_created_at[n] = created_at
+        inv = Invoice(
+            id=seed_id(f"analytics-invoice:{n}"),
+            tenant_id=tenant_id,
+            currency="USD",
+            source_channel="email",
+            source_file_path=f"invoices/seed/analytics-{n}.pdf",
+            content_hash=hashlib.sha256(f"analytics-seed-{n}".encode()).hexdigest(),
+            status=InvoiceStatus(status),
+            created_at=created_at,
+            updated_at=created_at,
+            invoice_number=f"INV-AN-{n}",
+            invoice_date=created_at.date(),
+            total=Decimal(total),
+            subtotal=Decimal(total),
+            tax=Decimal("0.00"),
+            vendor_id=vendors[vendor_idx].id,
+            overall_confidence=Decimal(str(confidence)) if confidence is not None else None,
+            extraction_backend="gemini" if confidence is not None else None,
+        )
+        invoices.append(inv)
+        # Built explicitly rather than via astuple(inv) so status --
+        # Invoice.status is InvoiceStatus, an enum -- goes over the wire as
+        # its plain string .value, not a bare enum member.
+        invoice_rows.append(
+            (
+                inv.id, inv.tenant_id, inv.currency, inv.source_channel, inv.source_file_path,
+                inv.content_hash, inv.status.value, inv.created_at, inv.updated_at,
+                inv.invoice_number, inv.invoice_date, inv.subtotal, inv.tax, inv.total,
+                inv.vendor_id, inv.po_id, inv.due_date, inv.extraction_backend,
+                inv.overall_confidence,
+            )
+        )
+
+    match_run_statuses = {"RECEIVED", "EXTRACTION_FAILED", "NEEDS_VERIFICATION"}
+    match_runs: list[tuple[object, ...]] = []
+    match_run_id_by_invoice: dict[int, uuid.UUID] = {}
+    for n, _vendor_idx, _day_offset, status, _confidence, _total in ANALYTICS_INVOICE_SPECS:
+        if status in match_run_statuses:
+            continue
+        match_run_id = seed_id(f"analytics-match-run:{n}")
+        match_run_id_by_invoice[n] = match_run_id
+        result = "exceptions" if n in ANALYTICS_EXCEPTION_SPECS else "clean"
+        duration_ms = 200 + (n * 137) % 2800
+        created_at = invoice_created_at[n]
+        match_runs.append(
+            (
+                match_run_id, tenant_id, seed_id(f"analytics-invoice:{n}"), 1, result,
+                duration_ms, created_at, created_at,
+            )
+        )
+
+    match_exceptions: list[tuple[object, ...]] = []
+    for n, spec in ANALYTICS_EXCEPTION_SPECS.items():
+        exc_type, severity, expected, actual, delta_pct, status, detail = spec
+        exc = MatchException(
+            id=seed_id(f"analytics-exception:{n}"),
+            tenant_id=tenant_id,
+            match_run_id=match_run_id_by_invoice[n],
+            invoice_id=seed_id(f"analytics-invoice:{n}"),
+            exception_type=ExceptionType(exc_type),
+            severity=Severity(severity),
+            status=status,  # type: ignore[arg-type]
+            created_at=invoice_created_at[n],
+            expected_value=Decimal(expected) if expected else None,
+            actual_value=Decimal(actual) if actual else None,
+            delta=(Decimal(actual) - Decimal(expected)) if expected and actual else None,
+            delta_pct=Decimal(delta_pct) if delta_pct else None,
+            resolved_by=approver_id if status != "open" else None,
+            resolved_at=invoice_created_at[n] if status != "open" else None,
+        )
+        match_exceptions.append(
+            (
+                exc.id, exc.tenant_id, exc.match_run_id, exc.invoice_id, exc.exception_type.value,
+                exc.severity.value, exc.expected_value, exc.actual_value, exc.delta, exc.delta_pct,
+                exc.status, exc.resolved_by, exc.resolved_at,
+                "resolved via seeded decision" if exc.status != "open" else None,
+                exc.created_at, detail,
+            )
+        )
+
+    status_by_n = {spec[0]: spec[3] for spec in ANALYTICS_INVOICE_SPECS}
+    audit_log_rows: list[tuple[object, ...]] = [
+        (
+            seed_id(f"analytics-decision:{n}"), tenant_id, "user", str(approver_id),
+            "approval_decided", "invoice", seed_id(f"analytics-invoice:{n}"),
+            Jsonb({"status": "PENDING_APPROVAL"}),
+            Jsonb(
+                {
+                    "status": status_by_n[n],
+                    "decision": "rejected" if status_by_n[n] == "REJECTED" else "approved",
+                }
+            ),
+            invoice_created_at[n] + timedelta(hours=hours),
+        )
+        for n, hours in ANALYTICS_DECISION_HOURS.items()
+    ]
+
+    # 18 extraction jobs spread over the same window, for the latency
+    # percentile chart -- jobs has no invoice_id column (payload is opaque
+    # jsonb), so these don't need to line up 1:1 with the invoices above.
+    # Every row gets an explicit seed_id() (not the default gen_random_uuid())
+    # for the same reason every other table in this file does: ON CONFLICT
+    # (id) DO NOTHING only makes a row idempotent if its id is deterministic
+    # -- a DB-generated default id would insert a fresh duplicate every run.
+    jobs_rows: list[tuple[object, ...]] = []
+    for i in range(1, 19):
+        created_at = now - timedelta(days=i)
+        duration_ms = 300 + (i * 211) % 4000
+        jobs_rows.append(
+            (
+                seed_id(f"analytics-extract-job:{i}"), tenant_id, "extract", Jsonb({"seed": i}),
+                "done", 1, 3, f"seed:analytics-extract-{i}", created_at, created_at,
+                "seed-worker", created_at, created_at + timedelta(milliseconds=duration_ms),
+            )
+        )
+
+    # 15 notification deliveries; every 6th one failed, for the delivery
+    # health panel's success-rate/mean-attempts figures.
+    notification_rows: list[tuple[object, ...]] = []
+    for i in range(1, 16):
+        created_at = now - timedelta(days=i)
+        failed = i % 6 == 0
+        sent_at = None if failed else created_at + timedelta(milliseconds=150 + (i * 97) % 1200)
+        notification_rows.append(
+            (
+                seed_id(f"analytics-notification:{i}"), tenant_id, "telegram", f"seed-chat-{i}",
+                f"seed:analytics-notify-{i}", "failed" if failed else "sent",
+                2 if failed else 1, sent_at, created_at,
+            )
+        )
+
+    # One permanently dead notification job + its dead_letters row, so the
+    # delivery health panel's dead-letter indicator has something to show.
+    dead_job_id = seed_id("analytics-dead-job:1")
+    dead_job_created_at = now - timedelta(days=2)
+    jobs_rows.append(
+        (
+            dead_job_id, tenant_id, "notify", Jsonb({"seed": "dead"}), "dead", 3, 3,
+            "seed:analytics-notify-dead-1", dead_job_created_at, dead_job_created_at,
+            "seed-worker", dead_job_created_at, dead_job_created_at,
+        )
+    )
+    dead_letters_row = (
+        seed_id("analytics-dead-letter:1"), tenant_id, dead_job_id,
+        Jsonb({"seed": "dead"}), "telegram API timeout after 3 attempts", dead_job_created_at,
+    )
+
+    return {
+        "invoices": invoice_rows,
+        "match_runs": match_runs,
+        "match_exceptions": match_exceptions,
+        "audit_log": audit_log_rows,
+        "jobs": jobs_rows,
+        "notification_deliveries": notification_rows,
+        "dead_letters": [dead_letters_row],
+    }
+
+
 def upsert(
     cur: psycopg.Cursor, table: str, columns: list[str], rows: Sequence[tuple[object, ...]]
 ) -> None:
@@ -356,6 +627,8 @@ def main() -> None:
     clerk_id = next(u[0] for u in users if u[2] == "clerk@doritech-demo.example")
     receipts, receipt_lines = build_goods_receipts(tenant.id, orders, lines_by_po, clerk_id)
     policy = build_tolerance_policy(tenant.id)
+    approver_id = next(u[0] for u in users if u[2] == "approver@doritech-demo.example")
+    analytics = build_analytics_dataset(tenant.id, vendors, approver_id)
 
     with psycopg.connect(database_url, autocommit=False) as conn:
         with conn.cursor() as cur:
@@ -454,13 +727,81 @@ def main() -> None:
                     )
                 ],
             )
+            upsert(
+                cur,
+                "invoices",
+                [
+                    "id", "tenant_id", "currency", "source_channel", "source_file_path",
+                    "content_hash", "status", "created_at", "updated_at", "invoice_number",
+                    "invoice_date", "subtotal", "tax", "total", "vendor_id", "po_id",
+                    "due_date", "extraction_backend", "overall_confidence",
+                ],
+                analytics["invoices"],
+            )
+            upsert(
+                cur,
+                "match_runs",
+                [
+                    "id", "tenant_id", "invoice_id", "policy_version", "result", "duration_ms",
+                    "executed_at", "created_at",
+                ],
+                analytics["match_runs"],
+            )
+            upsert(
+                cur,
+                "match_exceptions",
+                [
+                    "id", "tenant_id", "match_run_id", "invoice_id", "exception_type", "severity",
+                    "expected_value", "actual_value", "delta", "delta_pct", "status",
+                    "resolved_by", "resolved_at", "resolution_note", "created_at", "detail",
+                ],
+                analytics["match_exceptions"],
+            )
+            upsert(
+                cur,
+                "audit_log",
+                [
+                    "id", "tenant_id", "actor_type", "actor_id", "action", "entity_type",
+                    "entity_id", "before", "after", "created_at",
+                ],
+                analytics["audit_log"],
+            )
+            upsert(
+                cur,
+                "jobs",
+                [
+                    "id", "tenant_id", "job_type", "payload", "status", "attempts", "max_attempts",
+                    "idempotency_key", "run_after", "locked_at", "locked_by", "created_at",
+                    "updated_at",
+                ],
+                analytics["jobs"],
+            )
+            upsert(
+                cur,
+                "notification_deliveries",
+                [
+                    "id", "tenant_id", "channel", "recipient", "idempotency_key", "status",
+                    "attempts", "sent_at", "created_at",
+                ],
+                analytics["notification_deliveries"],
+            )
+            upsert(
+                cur,
+                "dead_letters",
+                ["id", "tenant_id", "job_id", "payload", "final_error", "created_at"],
+                analytics["dead_letters"],
+            )
         conn.commit()
 
     print(
         f"Seeded: 1 tenant, {len(users)} users, {len(vendors)} vendors, "
         f"{len(orders)} purchase orders, {len(all_po_lines)} PO lines, "
         f"{len(receipts)} goods receipts, {len(receipt_lines)} receipt lines, "
-        f"1 tolerance policy."
+        f"1 tolerance policy, {len(analytics['invoices'])} analytics invoices, "
+        f"{len(analytics['match_exceptions'])} analytics exceptions, "
+        f"{len(analytics['jobs'])} analytics jobs, "
+        f"{len(analytics['notification_deliveries'])} analytics deliveries, "
+        f"{len(analytics['dead_letters'])} dead letter(s)."
     )
 
 

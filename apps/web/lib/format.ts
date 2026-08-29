@@ -12,3 +12,14 @@ export function formatAge(iso: string): string {
   const months = Math.floor(days / 30);
   return `${months}mo`;
 }
+
+/** "9.8h", "2.3d", "45m" -- compact duration display from a seconds count. */
+export function formatDurationSeconds(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const minutes = seconds / 60;
+  if (minutes < 60) return `${minutes.toFixed(0)}m`;
+  const hours = minutes / 60;
+  if (hours < 48) return `${hours.toFixed(1)}h`;
+  const days = hours / 24;
+  return `${days.toFixed(1)}d`;
+}

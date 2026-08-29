@@ -13,12 +13,21 @@ export interface StatCardProps {
   /** Signed delta shown next to the value, e.g. +12 or -3. Omit to hide. */
   delta?: number;
   formatValue?: (value: number) => string;
+  /** Count-up start delay in ms, for staggering a row of cards (e.g. index * 80). */
+  delay?: number;
   className?: string;
 }
 
 const defaultFormat = (value: number) => Math.round(value).toLocaleString("en-US");
 
-export function StatCard({ label, value, delta, formatValue = defaultFormat, className }: StatCardProps) {
+export function StatCard({
+  label,
+  value,
+  delta,
+  formatValue = defaultFormat,
+  delay = 0,
+  className,
+}: StatCardProps) {
   const valueRef = useRef<HTMLSpanElement>(null);
   const reducedMotion = useReducedMotion();
 
@@ -29,6 +38,7 @@ export function StatCard({ label, value, delta, formatValue = defaultFormat, cla
         return animate(counter, {
           current: value,
           duration: DURATION.slow,
+          delay,
           ease: EASING.entrance,
           onUpdate: () => {
             if (valueRef.current) {
@@ -37,7 +47,7 @@ export function StatCard({ label, value, delta, formatValue = defaultFormat, cla
           },
         });
       }),
-    [value, reducedMotion],
+    [value, delay, reducedMotion],
   );
 
   const deltaTone =
