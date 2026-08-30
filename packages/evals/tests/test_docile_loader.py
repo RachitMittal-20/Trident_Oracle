@@ -15,11 +15,17 @@ def _build_docile_root(tmp_path):
     (root / "annotations" / "doc-1.json").write_text(
         json.dumps(
             {
+                # Matches a real downloaded DocILE export: header (KILE)
+                # fields and line-item (LIR) fields are two separate
+                # top-level lists, never merged, and line_item_id never
+                # appears inside field_extractions.
                 "field_extractions": [
-                    {"fieldtype": "date_issue", "text": "2026-08-12", "line_item_id": None},
-                    {"fieldtype": "vendor_name", "text": "Acme Supply Co.", "line_item_id": None},
-                    {"fieldtype": "amount_total_gross", "text": "450.47", "line_item_id": None},
-                    {"fieldtype": "customer_tax_id", "text": "TAX-999", "line_item_id": None},
+                    {"fieldtype": "date_issue", "text": "2026-08-12"},
+                    {"fieldtype": "vendor_name", "text": "Acme Supply Co."},
+                    {"fieldtype": "amount_total_gross", "text": "450.47"},
+                    {"fieldtype": "customer_tax_id", "text": "TAX-999"},
+                ],
+                "line_item_extractions": [
                     {
                         "fieldtype": "line_item_description",
                         "text": "Steel bracket",
@@ -34,7 +40,8 @@ def _build_docile_root(tmp_path):
                         "line_item_id": 1,
                     },
                     {"fieldtype": "line_item_quantity", "text": "12", "page": 0, "line_item_id": 1},
-                ]
+                ],
+                "line_item_headers": [],
             }
         )
     )

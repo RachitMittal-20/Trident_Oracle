@@ -3,22 +3,27 @@
 through)").
 
 DocILE (https://docile.rossum.ai/) requires registering for access before
-you can download it; there was no local copy available while writing this
-loader, so the mapping below is implemented against DocILE's *documented*
-KILE/LIR field taxonomy and annotation layout (rossum-ai/docile on GitHub,
-the DocILE paper's field list), not verified against real downloaded files.
+you can download it. This loader was originally written against DocILE's
+*documented* KILE/LIR field taxonomy without a local copy to verify
+against; once a real export became available, that documented assumption
+turned out to be wrong in one specific way (see below), now fixed.
 
-IMPORTANT: the first time you actually run this against a real DocILE
-export, open one `annotations/<doc_id>.json` file and confirm it matches
-what `_parse_annotation_json` below expects (an object with a
-`field_extractions` list, each entry having `fieldtype`, `text`, `page`,
-`bbox`, and `line_item_id`) before trusting any metric this loader feeds
-into. If DocILE's shipped schema differs, the fix is localized to that one
-function.
+CONFIRMED against a real downloaded export: each `annotations/<id>.json`
+has FOUR top-level keys, not one -- `field_extractions` (header/KILE
+fields only -- no `line_item_id` ever appears here), `line_item_extractions`
+(LIR fields, each with a `line_item_id`), `line_item_headers` (column
+labels for the line-item table, not data -- unused by this loader), and
+`metadata`. An earlier version of this loader read only `field_extractions`
+and looked for `line_item_id` inside it, which is always absent there --
+that silently produced zero line items for every real document, not a
+crash, so it went unnoticed until someone actually ran it against a real
+export and looked. `_parse_annotation_json` now reads both extraction
+lists separately.
 
 Expected local layout, per the toolkit's own convention:
     {root}/{split}.json          -- list of document ids in this split
-    {root}/annotations/{id}.json -- this document's field_extractions
+    {root}/annotations/{id}.json -- this document's field_extractions +
+                                     line_item_extractions
     {root}/pdfs/{id}.pdf          -- the source PDF
 
 Field mapping (DocILE KILE/LIR fieldtype -> our schema):
@@ -92,6 +97,17 @@ def _parse_annotation_json(doc_id: str, data: dict[str, Any]) -> GroundTruthDocu
             "to match the real downloaded schema"
         ) from exc
 
+    # Confirmed against a real downloaded export (not just the documented
+    # schema this loader was originally written against): 'field_extractions'
+    # never carries a line_item_id -- header (KILE) and line-item (LIR)
+    # fields are two entirely separate top-level lists in the real DocILE
+    # annotation JSON, 'field_extractions' and 'line_item_extractions'.
+    # Reading only the former (as an earlier version of this loader did)
+    # silently produces zero line items for every real document -- the
+    # `line_item_id is not None` branch below was dead code against real
+    # data, always empty ground truth, not merely None/attempted-but-wrong.
+    line_extractions = data.get("line_item_extractions", [])
+
     header_values: dict[str, str] = {}
     unmapped: dict[str, str] = {"document_id": doc_id}
     line_values: dict[int, dict[str, str]] = {}
@@ -101,14 +117,19 @@ def _parse_annotation_json(doc_id: str, data: dict[str, Any]) -> GroundTruthDocu
         text = entry.get("text")
         if not fieldtype or text is None:
             continue
-        line_item_id = entry.get("line_item_id")
-
-        if line_item_id is not None and fieldtype in _LIR_TO_LINE:
-            line_values.setdefault(line_item_id, {})[_LIR_TO_LINE[fieldtype]] = text
-        elif line_item_id is None and fieldtype in _KILE_TO_HEADER:
+        if fieldtype in _KILE_TO_HEADER:
             header_values[_KILE_TO_HEADER[fieldtype]] = text
-        elif line_item_id is None:
+        else:
             unmapped[fieldtype] = text
+
+    for entry in line_extractions:
+        fieldtype = entry.get("fieldtype")
+        text = entry.get("text")
+        line_item_id = entry.get("line_item_id")
+        if not fieldtype or text is None or line_item_id is None:
+            continue
+        if fieldtype in _LIR_TO_LINE:
+            line_values.setdefault(line_item_id, {})[_LIR_TO_LINE[fieldtype]] = text
         # LIR fields with no home in our schema (line_item_tax, etc.) are
         # dropped per-line rather than added to the document-level
         # unmapped_fields dict -- there's no clean per-line equivalent of

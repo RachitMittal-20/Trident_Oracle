@@ -30,8 +30,11 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# env files -- .env.example is the one intentional exception: it's a
+# template with no real secrets, meant to be committed (found the hard way:
+# this pattern was silently excluding it, so it never existed until now).
 .env*
+!.env.example
 
 # vercel
 .vercel

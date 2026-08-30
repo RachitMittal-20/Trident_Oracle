@@ -49,7 +49,7 @@ import psycopg
 import structlog
 from approval_tokens import issue_approval_token
 from core.decision import Decision, decide
-from core.errors import MatchingError, PolicyViolation
+from core.errors import MatchingError, PolicyViolation, TridentOracleError
 from core.matching.duplicates import InvoiceSummary
 from core.matching.three_way import MatchFinding, ThreeWayMatchResult, run_three_way_match
 from core.models import (
@@ -616,10 +616,49 @@ def handle_match(conn: psycopg.Connection[Any], queue: JobQueue, job: Job) -> No
         for row in prior_invoice_rows
     )
 
-    invoice = _row_to_invoice(invoice_row)
+    # Reconstructing these domain objects from persisted extraction output
+    # can fail its own validation (core.models.__post_init__: a negative or
+    # zero qty, a subtotal+tax that doesn't reconcile with total, etc.) --
+    # discovered live, not by reading the code: a sufficiently degraded
+    # extraction (a blurry photo misreading a decimal point as a comma, an
+    # unparseable quantity defaulting to zero) can produce exactly this.
+    # Before this fix, that raised uncaught here, and the 'match' job would
+    # retry per its own backoff, exhaust max_attempts, and dead-letter --
+    # the invoice stuck at MATCHING forever, silently, with no user-visible
+    # error. That is precisely the situation confidence-gating (core.
+    # decision.decide, ARCHITECTURE.md section 6) exists to route to a
+    # human instead of trusting -- extraction data too malformed to even
+    # construct a valid domain object is strictly less trustworthy than
+    # data that constructs fine but scores low confidence, and the latter
+    # already routes to NEEDS_VERIFICATION. This routes the former there
+    # too, rather than crashing the job.
+    try:
+        invoice = _row_to_invoice(invoice_row)
+        invoice_lines = [_row_to_invoice_line(r) for r in invoice_line_rows]
+    except TridentOracleError as exc:
+        _transition(
+            conn,
+            invoice_id,
+            tenant_id,
+            InvoiceStatus.MATCHING,
+            InvoiceStatus.NEEDS_VERIFICATION,
+            extra_audit={
+                "reason": (
+                    "Needs verification: extracted data failed basic validation "
+                    f"({exc}) -- too malformed to even attempt a match."
+                )
+            },
+        )
+        log.warning(
+            "match_invalid_extraction_data",
+            invoice_id=str(invoice_id),
+            error=str(exc),
+        )
+        return
+
     match_result = run_three_way_match(
         invoice=invoice,
-        invoice_lines=[_row_to_invoice_line(r) for r in invoice_line_rows],
+        invoice_lines=invoice_lines,
         vendor=_row_to_vendor(vendor_row),
         po=_row_to_po(po_row) if po_row is not None else None,
         po_lines=[_row_to_po_line(r) for r in po_line_rows],

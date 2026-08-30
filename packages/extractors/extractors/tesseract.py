@@ -18,10 +18,22 @@ the same nominal value, not compared like-for-like.
 Header fields are found by labelled-regex extraction: search OCR'd text lines
 for a configurable set of label synonyms (e.g. "Invoice No.", "Inv #") and
 take the text after the label (same line, or the next line if the label
-sits alone). Only invoice_number, invoice_date, total, and tax are attempted
-this way -- vendor_name and currency have no reliable label to search for on
-a typical invoice, and due_date/subtotal are left for a later pass. Those
-fields come back None, honestly, rather than guessed.
+sits alone). invoice_number, invoice_date, subtotal, total, and tax are
+attempted this way -- vendor_name and currency have no reliable label to
+search for on a typical invoice, and due_date is left for a later pass.
+Those fields come back None, honestly, rather than guessed.
+
+subtotal specifically: a documented earlier version of this module deferred
+it deliberately ("left for a later pass"), same reasoning as due_date. That
+deferral had a consequence more serious than "one missing nice-to-have
+field" -- core.matching.three_way.run_three_way_match requires subtotal,
+tax, and total all non-None before it will run at all, so an invoice
+extracted purely by this backend could never reach the matching engine: the
+'match' job would raise MatchingError every attempt, retry with backoff,
+and eventually dead-letter, leaving the invoice stuck at MATCHING forever
+with no user-visible error. Discovered by actually running a real invoice
+image through this backend end to end, not by reading the code. Fixed the
+same way total/tax already are -- a label synonym, not a guess.
 
 Line items are found by column-position clustering: OCR word left-edges are
 clustered into columns, columns are classified numeric vs. text, and the
@@ -59,6 +71,7 @@ log = structlog.get_logger()
 DEFAULT_LABEL_SYNONYMS: dict[str, tuple[str, ...]] = {
     "invoice_number": ("invoice number", "invoice no", "invoice #", "inv no", "inv#"),
     "invoice_date": ("invoice date", "inv date", "date of invoice"),
+    "subtotal": ("subtotal", "sub-total", "sub total", "net amount"),
     "total": ("total due", "amount due", "grand total", "balance due", "total"),
     "tax": ("sales tax", "vat", "gst", "tax"),
 }
@@ -186,7 +199,21 @@ def _ocr_page(image: Image.Image, page: int) -> list[_Line]:
     preprocessed = _preprocess(image)
     page_height, page_width = preprocessed.shape[:2]
     try:
-        data = pytesseract.image_to_data(preprocessed, output_type=Output.DICT)
+        # --psm 6 ("assume a single uniform block of text"), not Tesseract's
+        # default PSM 3 (automatic page segmentation with orientation/script
+        # detection). Confirmed empirically against a real invoice-table
+        # layout: PSM 3's automatic column/segmentation analysis silently
+        # drops short tokens that sit alone in a column surrounded by
+        # whitespace on all sides (a bare "Qty"/"10"/"25.00" cell, exactly
+        # the shape of a real line-item table) -- not misread, not merged,
+        # just absent from image_to_data's output entirely, with no error.
+        # PSM 6 does not do that: same preprocessing, same image, every
+        # token recognized. This is the standard recommended PSM for
+        # invoice/receipt-shaped documents (mostly one column, no multi-
+        # article newspaper-style layout for PSM 3's segmentation to earn
+        # its keep on) and directly explains part of this backend's poor
+        # measured line-item recall in docs/BENCHMARKS.md.
+        data = pytesseract.image_to_data(preprocessed, output_type=Output.DICT, config="--psm 6")
     except (pytesseract.TesseractError, pytesseract.TesseractNotFoundError) as exc:
         raise ExtractionError(f"tesseract OCR failed: {exc}") from exc
     return _words_to_lines(data, page, page_width, page_height)

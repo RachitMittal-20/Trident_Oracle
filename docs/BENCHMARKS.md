@@ -6,18 +6,90 @@ are never overwritten or removed, including ones with disappointing
 numbers: selective reporting would undermine the entire point of this
 file.
 
-**Dataset status, as of the last time this preamble was written:** DocILE
-(the primary dataset -- see packages/evals/evals/datasets/docile.py) is not
-yet available in this environment; it requires registering for access at
-https://docile.rossum.ai/. CORD and SROIE (both public, no registration
-needed) are used as documented fallbacks in the meantime -- see each
-loader's own module docstring for exactly what each dataset can and can't
-validate (SROIE in particular has no line items at all; CORD has no
-invoice_number/due_date/vendor_name).
+**Dataset status, updated once a real DocILE export arrived:** a real DocILE
+download (`data/docile/`, ~5,700 documents) is now present locally. Getting
+a real annotation file confirmed the loader's original schema assumption
+(written against DocILE's documented taxonomy, no local copy to check
+against at the time) was wrong in one specific way: line-item fields live
+in a separate `line_item_extractions` list, not folded into
+`field_extractions` alongside header fields the way the loader assumed --
+that silently produced zero ground-truth line items for every real
+document until it was caught and fixed (see docile.py's module docstring
+and git history for the fix). Every real-data run below post-dates that
+fix. CORD and SROIE (both public, no registration needed) remain available
+as documented fallbacks -- see each loader's own module docstring for what
+each dataset can and can't validate (SROIE has no line items at all; CORD
+has no invoice_number/due_date/vendor_name).
 
-No run against a real DocILE export or a live Gemini/Tesseract backend has
-been executed yet at the time this file was created -- see the harness's
-own test suite (packages/evals/tests/) for evidence the mechanics
+**No Gemini run has been executed against any dataset** -- this environment
+has no `GEMINI_API_KEY`. Every real-data run below is `tesseract` only.
+Read these numbers as "what raw local OCR gets you with zero semantic
+understanding of the document," the baseline the project's actual
+production default (`GeminiExtractor` primary, Tesseract fallback) exists
+to beat -- not as a measurement of the system's real-world accuracy, which
+requires a Gemini run this environment can't produce.
+
+**Known operational issue, found while producing these runs:** `python -m
+evals run --backend tesseract ... --concurrency >1` segfaults partway
+through a real multi-document DocILE run. Root cause (not yet fixed): the
+runner's thread pool (`packages/evals/evals/runner.py`) calls
+`Extractor.extract` concurrently across threads, and the tesseract
+backend's PDF rendering (`packages/extractors/extractors/pdf.py`, via
+`pypdfium2`) is not safe to call from multiple threads at once. Every
+tesseract run in this file was produced with `--concurrency 1`, which has
+no such issue -- see docs/ROADMAP.md.
+
+**Two real bugs in `TesseractExtractor` itself, found and fixed while
+building this file's real runs** (not found by reading the code -- found by
+actually running a real invoice image through it and getting garbage back,
+then tracing why): (1) it used Tesseract's default automatic page
+segmentation (PSM 3), which silently *drops* short tokens sitting alone in
+a column surrounded by whitespace -- a bare `"Qty"` or `"10"` cell, exactly
+the shape of a real line-item table -- with no error, not a misread. Fixed
+by requesting `--psm 6` ("assume a single uniform block of text") instead.
+(2) `subtotal` had no label synonym at all -- a documented, deliberate
+deferral in an earlier version of this module -- but `core.matching.
+three_way.run_three_way_match` requires `subtotal` non-null before it will
+run at all, so *every* Tesseract-extracted invoice was structurally unable
+to ever reach the matching engine: the `match` job would raise
+`MatchingError`, retry, and dead-letter, silently, forever. Fixed the same
+way `total`/`tax` already work -- a label synonym, not a guess.
+
+**A third, related bug found and fixed one layer up, in the worker**: even
+with (1) and (2) fixed, a real degraded scan can still misread a value in a
+way that produces syntactically-parseable but *domain-invalid* data -- a
+decimal point OCR'd as a comma turning "100.00" into a wildly wrong number
+that no longer reconciles with subtotal+tax, or an unparseable quantity
+cell defaulting to zero. Reconstructing `Invoice`/`InvoiceLine` from that
+(`apps/worker/worker/match_handler.py`) raised its own validation error
+uncaught, and the `match` job retried and dead-lettered exactly like the
+`subtotal` bug above -- silently stuck, no verification screen, nothing.
+Found while building this file's `docile`/`tesseract` runs is what
+surfaced it, live, not a read of the code. Fixed by treating that
+validation failure the same way low extraction confidence already is
+treated: routed to `NEEDS_VERIFICATION` instead of crashing the job --
+data too malformed to even construct a valid domain object is strictly
+less trustworthy than data that constructs fine but scores low confidence,
+and the latter already routes there.
+
+**One real bug found, NOT fixed**: a header/letterhead line with no
+matching label synonym (e.g. a vendor name) can leak into the line-item
+table detector's column-clustering pass alongside the real table rows,
+corrupting the column boundaries computed for everything on the page. This
+is very likely a real contributor to the near-zero line-item numbers below,
+on top of the layout heuristic's own inherent limits — but reproducing and
+fixing it properly needs more investigation than this pass had room for.
+Left as a known issue rather than a rushed, unverified fix -- see
+docs/ROADMAP.md.
+
+**Reading the runs below**: several `docile`/`tesseract` runs appear at
+different points in this file's history, some predating the fixes above.
+The most recent one reflects the current code (post docile-loader fix,
+post both `TesseractExtractor` fixes); earlier ones are kept exactly as
+produced, per this file's own no-overwrite rule -- don't average them
+together as if they measured the same thing.
+
+See the harness's own test suite (packages/evals/tests/) for evidence the mechanics
 (dataset mapping, metrics, checkpoint/resume, comparison) work correctly
 against synthetic fixtures. The sections below start accumulating the
 moment a real `run`/`compare` invocation happens.
@@ -70,3 +142,135 @@ This reruns the exact same fixture through the exact same code path that
 produced the live row -- it will not reproduce the identical `eval_runs.id`
 (a fresh UUID every run), but every number should match, since the mock
 backend and the fixture above are both fully deterministic.
+
+## Run: docile / tesseract -- 2026-08-29T11:44:25+00:00
+
+- Model version: `5.5.3`
+- Requested: 5 · Succeeded: 5 · Failed: 0
+- Mean latency: 2109.8 ms (p50 864.0 · p95 5929.2 · p99 6839.4) · Estimated cost: $0.0000
+
+### Per-field metrics
+
+| Field | n | Precision | Recall | F1 | Exact match | MAE | Within tol. | Mean conf. |
+|---|---|---|---|---|---|---|---|---|
+| `header.currency` | 2 | — | 0.0% | — | 0.0% | — | — | — |
+| `header.due_date` | 1 | — | 0.0% | — | 0.0% | — | — | — |
+| `header.invoice_date` | 4 | 100.0% | 25.0% | 40.0% | 0.0% | — | — | 0.19 |
+| `header.invoice_number` | 0 | — | — | — | — | — | — | — |
+| `header.subtotal` | 0 | — | — | — | — | — | — | — |
+| `header.tax` | 0 | 0.0% | — | — | — | — | — | — |
+| `header.total` | 5 | 100.0% | 100.0% | 100.0% | 60.0% | 0.00 | 100.0% | 0.64 |
+| `header.vendor_name` | 4 | — | 0.0% | — | 0.0% | — | — | — |
+| `lines[].description` | 1 | 100.0% | 100.0% | 100.0% | 100.0% | — | — | 0.57 |
+| `lines[].line_total` | 1 | — | 0.0% | — | 0.0% | — | — | — |
+| `lines[].qty` | 0 | — | — | — | — | — | — | — |
+| `lines[].unit_price` | 0 | — | — | — | — | — | — | — |
+
+### Line item recognition
+
+- Ground truth lines: 31 · Predicted lines: 160 · Matched: 1
+- Precision: 0.6% · Recall: 3.2% · F1: 1.0%
+
+### Confidence calibration
+
+A well-calibrated model reporting 0.9 confidence should be right ~90% of the time. **Gap = mean confidence − actual accuracy; positive means overconfident.**
+
+| Bucket | n | Mean confidence | Actual accuracy | Gap |
+|---|---|---|---|---|
+| 0.0–0.1 | 1 | 0.0% | 0.0% | 0.0% |
+| 0.1–0.2 | 1 | 19.0% | 0.0% | 19.0% |
+| 0.5–0.6 | 1 | 57.5% | 100.0% | -42.5% |
+| 0.6–0.7 | 2 | 66.5% | 50.0% | 16.5% |
+| 0.9–1.0 | 2 | 93.8% | 100.0% | -6.2% |
+
+
+## Run: docile / tesseract -- 2026-08-29T11:46:48+00:00
+
+- Model version: `5.5.3`
+- Requested: 40 · Succeeded: 40 · Failed: 0
+- Mean latency: 1122.3 ms (p50 697.0 · p95 2909.0 · p99 6823.6) · Estimated cost: $0.0000
+
+### Per-field metrics
+
+| Field | n | Precision | Recall | F1 | Exact match | MAE | Within tol. | Mean conf. |
+|---|---|---|---|---|---|---|---|---|
+| `header.currency` | 21 | — | 0.0% | — | 0.0% | — | — | — |
+| `header.due_date` | 6 | — | 0.0% | — | 0.0% | — | — | — |
+| `header.invoice_date` | 35 | 100.0% | 11.4% | 20.5% | 0.0% | — | — | 0.40 |
+| `header.invoice_number` | 0 | 0.0% | — | — | — | — | — | — |
+| `header.subtotal` | 6 | — | 0.0% | — | 0.0% | — | — | — |
+| `header.tax` | 4 | 60.0% | 75.0% | 66.7% | 25.0% | 4.50 | 50.0% | 0.69 |
+| `header.total` | 36 | 86.7% | 72.2% | 78.8% | 25.0% | 105943861.49 | 52.9% | 0.70 |
+| `header.vendor_name` | 35 | — | 0.0% | — | 0.0% | — | — | — |
+| `lines[].description` | 4 | 100.0% | 100.0% | 100.0% | 100.0% | — | — | 0.74 |
+| `lines[].line_total` | 3 | — | 0.0% | — | 0.0% | — | — | — |
+| `lines[].qty` | 0 | — | — | — | — | — | — | — |
+| `lines[].unit_price` | 0 | — | — | — | — | — | — | — |
+
+### Line item recognition
+
+- Ground truth lines: 188 · Predicted lines: 674 · Matched: 4
+- Precision: 0.6% · Recall: 2.1% · F1: 0.9%
+
+### Confidence calibration
+
+A well-calibrated model reporting 0.9 confidence should be right ~90% of the time. **Gap = mean confidence − actual accuracy; positive means overconfident.**
+
+| Bucket | n | Mean confidence | Actual accuracy | Gap |
+|---|---|---|---|---|
+| 0.0–0.1 | 1 | 0.0% | 0.0% | 0.0% |
+| 0.1–0.2 | 1 | 19.0% | 0.0% | 19.0% |
+| 0.2–0.3 | 1 | 24.0% | 0.0% | 24.0% |
+| 0.3–0.4 | 3 | 35.2% | 0.0% | 35.2% |
+| 0.4–0.5 | 3 | 43.7% | 33.3% | 10.3% |
+| 0.5–0.6 | 3 | 56.3% | 33.3% | 23.0% |
+| 0.6–0.7 | 8 | 65.6% | 37.5% | 28.1% |
+| 0.7–0.8 | 4 | 75.5% | 50.0% | 25.5% |
+| 0.8–0.9 | 3 | 87.6% | 33.3% | 54.2% |
+| 0.9–1.0 | 10 | 94.9% | 60.0% | 34.9% |
+
+
+## Run: docile / tesseract -- 2026-08-29T12:06:47+00:00
+
+- Model version: `5.5.3`
+- Requested: 40 · Succeeded: 40 · Failed: 0
+- Mean latency: 1112.6 ms (p50 661.5 · p95 3606.3 · p99 6242.5) · Estimated cost: $0.0000
+
+### Per-field metrics
+
+| Field | n | Precision | Recall | F1 | Exact match | MAE | Within tol. | Mean conf. |
+|---|---|---|---|---|---|---|---|---|
+| `header.currency` | 21 | — | 0.0% | — | 0.0% | — | — | — |
+| `header.due_date` | 6 | — | 0.0% | — | 0.0% | — | — | — |
+| `header.invoice_date` | 35 | 100.0% | 8.6% | 15.8% | 0.0% | — | — | 0.47 |
+| `header.invoice_number` | 0 | 0.0% | — | — | — | — | — | — |
+| `header.subtotal` | 6 | 75.0% | 50.0% | 60.0% | 50.0% | 0.00 | 100.0% | 0.85 |
+| `header.tax` | 4 | 50.0% | 75.0% | 60.0% | 25.0% | 3.07 | 33.3% | 0.68 |
+| `header.total` | 36 | 87.1% | 75.0% | 80.6% | 25.0% | 12200.41 | 55.6% | 0.71 |
+| `header.vendor_name` | 35 | — | 0.0% | — | 0.0% | — | — | — |
+| `lines[].description` | 1 | 100.0% | 100.0% | 100.0% | 100.0% | — | — | 0.96 |
+| `lines[].line_total` | 1 | — | 0.0% | — | 0.0% | — | — | — |
+| `lines[].qty` | 0 | — | — | — | — | — | — | — |
+| `lines[].unit_price` | 0 | — | — | — | — | — | — | — |
+
+### Line item recognition
+
+- Ground truth lines: 188 · Predicted lines: 687 · Matched: 1
+- Precision: 0.1% · Recall: 0.5% · F1: 0.2%
+
+### Confidence calibration
+
+A well-calibrated model reporting 0.9 confidence should be right ~90% of the time. **Gap = mean confidence − actual accuracy; positive means overconfident.**
+
+| Bucket | n | Mean confidence | Actual accuracy | Gap |
+|---|---|---|---|---|
+| 0.0–0.1 | 1 | 0.0% | 100.0% | -100.0% |
+| 0.2–0.3 | 2 | 23.8% | 0.0% | 23.8% |
+| 0.3–0.4 | 1 | 34.2% | 0.0% | 34.2% |
+| 0.4–0.5 | 3 | 49.3% | 0.0% | 49.3% |
+| 0.5–0.6 | 4 | 55.2% | 25.0% | 30.2% |
+| 0.6–0.7 | 5 | 67.5% | 40.0% | 27.5% |
+| 0.7–0.8 | 6 | 74.8% | 16.7% | 58.2% |
+| 0.8–0.9 | 6 | 86.9% | 16.7% | 70.2% |
+| 0.9–1.0 | 9 | 94.5% | 88.9% | 5.6% |
+
