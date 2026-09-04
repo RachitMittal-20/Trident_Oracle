@@ -13,13 +13,24 @@ vendor-name comparison).
 
 Usage:
     DATABASE_URL=postgresql://... uv run python demo/link_po.py \\
-        --fixture demo/fixtures/01-clean-invoice.png --po PO-3001
+        --fixture demo/fixtures/01-clean-invoice.png --po PO-3001 \\
+        --tenant d93d0ea3-1891-5956-90fe-fdc00df7f4ad
 
 Looks up the invoice by content_hash (sha256 of the fixture file's bytes --
 identical computation to apps/api/api/ingest.py's own dedupe key) rather
 than by id, since the id is only known from the upload response, which this
 script deliberately doesn't need to be handed -- the presenter can run this
 straight after a UI drag-and-drop, not just after a scripted curl upload.
+
+--tenant is required, not inferred: DATABASE_URL connects as app_role,
+which is fully RLS-scoped -- with no app.tenant_id set on the connection,
+every tenant-scoped table (invoices included) returns zero rows regardless
+of what's really there, RLS's default-deny per db/README.md. There is no
+way to discover which tenant an invoice belongs to without already knowing
+it (that's the whole point of RLS), so the caller must supply it. Found
+live: an earlier version of this script queried without ever setting
+app.tenant_id and always reported "no invoice found" for an invoice that
+had, in fact, just been uploaded successfully.
 """
 
 import argparse
@@ -34,6 +45,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fixture", required=True, help="path to the uploaded fixture file")
     parser.add_argument("--po", required=True, help="po_number to link, e.g. PO-3001")
+    parser.add_argument("--tenant", required=True, help="tenant_id the invoice was uploaded under")
     args = parser.parse_args()
 
     database_url = os.environ.get("DATABASE_URL")
@@ -45,6 +57,7 @@ def main() -> int:
 
     with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
+            cur.execute("SELECT set_config('app.tenant_id', %s, false)", (args.tenant,))
             cur.execute(
                 "SELECT id, tenant_id, po_id, status FROM invoices WHERE content_hash = %s "
                 "ORDER BY created_at DESC LIMIT 1",
