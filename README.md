@@ -163,7 +163,7 @@ for f in db/migrations/*.sql; do
 done
 
 # Seed a realistic demo dataset (idempotent -- safe to rerun)
-DATABASE_URL=<service-role connection> uv run python db/seed/seed.py
+RESET_SCRIPT_DATABASE_URL=<service-role connection> uv run python db/seed/seed.py
 ```
 
 **Running**

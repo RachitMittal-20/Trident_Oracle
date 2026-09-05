@@ -48,7 +48,7 @@ of uploading, every time, and you will not hit this.
 
 ```bash
 # 1. Base demo dataset (tenant, 9 vendors, 25 realistic POs/GRNs, analytics history)
-DATABASE_URL=<service-role connection> uv run python db/seed/seed.py
+RESET_SCRIPT_DATABASE_URL=<service-role connection> uv run python db/seed/seed.py
 
 # 2. This runbook's exact PO/GRN data (3 POs, matched to the 4 fixtures below)
 DATABASE_URL=<service-role connection> uv run python demo/seed_demo.py
@@ -147,7 +147,7 @@ Questions.
 ## Resetting between rehearsals
 
 ```bash
-DATABASE_URL=<service-role connection> uv run python demo/reset.py
+RESET_SCRIPT_DATABASE_URL=<service-role connection> uv run python demo/reset.py
 ```
 
 Deletes the four demo invoices (`INV-4001`-`INV-4003`, matched by `invoice_number LIKE

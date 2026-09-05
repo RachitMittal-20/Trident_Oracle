@@ -6,7 +6,15 @@ demo/seed_demo.py seeded -- that's meant to persist across runs, only the
 invoice-shaped state that a demo run creates needs clearing.
 
 Usage:
-    DATABASE_URL=postgresql://... uv run python demo/reset.py
+    RESET_SCRIPT_DATABASE_URL=postgresql://... uv run python demo/reset.py
+
+Requires a service-role/direct connection, not app_role: app_role has no
+DELETE grant on any of these tables (by design -- production never deletes
+invoice-shaped rows, only a demo reset does), so this can never run against
+the app's own DATABASE_URL. RESET_SCRIPT_DATABASE_URL is a separate env var
+for exactly that reason -- keeping it distinct from DATABASE_URL means
+sourcing the app's own .env can never accidentally hand this script a
+connection it silently can't use.
 
 Does not touch audit_log (append-only by design, per CLAUDE.md -- a demo
 reset is not an exemption from that rule; old demo runs' audit trail is
@@ -24,13 +32,17 @@ TENANT_ID = uuid.uuid5(TENANT_ID, "tenant:doritech-demo")
 
 
 def main() -> int:
-    database_url = os.environ.get("DATABASE_URL")
+    database_url = os.environ.get("RESET_SCRIPT_DATABASE_URL")
     if not database_url:
-        print("error: DATABASE_URL must be set (service-role/direct connection)", file=sys.stderr)
+        print(
+            "error: RESET_SCRIPT_DATABASE_URL must be set (service-role/direct connection)",
+            file=sys.stderr,
+        )
         return 1
 
     with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
+            cur.execute("SELECT set_config('app.tenant_id', %s, false)", (str(TENANT_ID),))
             cur.execute(
                 "SELECT id FROM invoices WHERE tenant_id = %s "
                 "AND invoice_number LIKE 'INV-4%%'",
@@ -41,6 +53,12 @@ def main() -> int:
                 print("Nothing to reset -- no demo invoices (INV-4xxx) found.")
                 return 0
 
+            invoice_id_strs = [str(i) for i in invoice_ids]
+            cur.execute(
+                "DELETE FROM dead_letters WHERE job_id IN ("
+                "SELECT id FROM jobs WHERE tenant_id = %s AND payload->>'invoice_id' = ANY(%s))",
+                (TENANT_ID, invoice_id_strs),
+            )
             cur.execute(
                 "DELETE FROM approval_requests WHERE invoice_id = ANY(%s)", (invoice_ids,)
             )
@@ -57,7 +75,7 @@ def main() -> int:
             cur.execute("DELETE FROM invoice_lines WHERE invoice_id = ANY(%s)", (invoice_ids,))
             cur.execute(
                 "DELETE FROM jobs WHERE tenant_id = %s AND payload->>'invoice_id' = ANY(%s)",
-                (TENANT_ID, [str(i) for i in invoice_ids]),
+                (TENANT_ID, invoice_id_strs),
             )
             cur.execute("DELETE FROM invoices WHERE id = ANY(%s)", (invoice_ids,))
         conn.commit()

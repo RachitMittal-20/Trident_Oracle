@@ -1,12 +1,15 @@
 """Populate a realistic demo dataset for Trident Oracle.
 
 Usage:
-    DATABASE_URL=postgresql://... uv run python db/seed/seed.py
+    RESET_SCRIPT_DATABASE_URL=postgresql://... uv run python db/seed/seed.py
 
 Requires a connection with enough privilege to bypass RLS (the Supabase
 `postgres`/service-role connection, not an RLS-scoped app role) -- this script
 seeds data for a specific tenant directly, it does not go through the
-request-scoped `app.tenant_id` path that application code uses.
+request-scoped `app.tenant_id` path that application code uses. Deliberately
+reads RESET_SCRIPT_DATABASE_URL, not DATABASE_URL: the app's own DATABASE_URL
+is app_role, which has SELECT-only on `tenants` and would fail here exactly
+as it does for demo/reset.py's DELETEs.
 
 Idempotent: every row's id is a UUIDv5 deterministically derived from a stable
 natural key (e.g. "vendor:2", "po-line:PO-2026-1007:3"), and every insert uses
@@ -614,9 +617,9 @@ def upsert(
 
 
 def main() -> None:
-    database_url = os.environ.get("DATABASE_URL")
+    database_url = os.environ.get("RESET_SCRIPT_DATABASE_URL")
     if not database_url:
-        print("ERROR: DATABASE_URL is not set", file=sys.stderr)
+        print("ERROR: RESET_SCRIPT_DATABASE_URL is not set", file=sys.stderr)
         raise SystemExit(1)
 
     tenant = build_tenant()
